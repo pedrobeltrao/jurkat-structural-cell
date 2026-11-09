@@ -1,0 +1,33 @@
+# data and build output never go into git (the viewer data live on Hugging Face)
+data/
+logs/
+conda_envs/
+external/
+jurkat/viewer/web/
+jurkat/viewer/app/node_modules/
+jurkat/viewer/app/dist/
+jurkat/viewer/app/dist_single/
+jurkat/viewer/app/public/molstar/
+jurkat/yc/pipeline/lib/
+jurkat/yc/pipeline/lib_bak*/
+jurkat/yc/pipeline/data/
+jurkat/yc/work/
+*_work/
+# backups, caches, large binaries
+*.bak*
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+*.npz
+*.npy
+*.parquet
+*.h5
+*.zarr
+*.bin
+*.bin.gz
+*.tar
+*.gz
+.DS_Store
+.env
+.vscode/
+.idea/

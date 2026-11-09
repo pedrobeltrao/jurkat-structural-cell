@@ -1,0 +1,243 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Jurkat Cell Model</title>
+<style>
+:root { --bg: rgba(22, 24, 30, 0.84); --bg2: rgba(255,255,255,0.06); --fg: #ECE9E2; --mut: #a9a69e; --acc: #E9ED4C; --acc2: #FF9400; --line: rgba(255,255,255,0.12); }
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; overflow: hidden; background: #F6F1E7; font-family: 'Liberation Sans', Arimo, 'Helvetica Neue', Arial, sans-serif; color: var(--fg); }
+#gpu { position: fixed; inset: 0; width: 100vw; height: 100vh; display: block; outline: none; cursor: grab; touch-action: none; }
+#gpu.dragging { cursor: grabbing; }
+.glass { background: var(--bg); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); border: 1px solid var(--line); border-radius: 12px; box-shadow: 0 8px 30px rgba(0,0,0,0.25); }
+#panel { position: fixed; left: 12px; top: 12px; bottom: 12px; width: 300px; overflow-y: auto; padding: 14px 14px 10px; font-size: 12.5px; scrollbar-width: thin; z-index: 5; transition: transform .25s; }
+#panel.collapsed { transform: translateX(-320px); }
+#panelToggle { position: fixed; left: 320px; top: 14px; z-index: 6; width: 26px; height: 26px; border-radius: 7px; border: 1px solid var(--line); background: var(--bg); color: var(--fg); cursor: pointer; transition: left .25s; }
+#panel.collapsed + #panelToggle { left: 12px; }
+h1 { font-size: 17px; margin: 0 0 2px; letter-spacing: .2px; }
+.sub { color: var(--mut); font-size: 11.5px; line-height: 1.35; }
+section { border-top: 1px solid var(--line); margin-top: 11px; padding-top: 10px; }
+section > .h { font-size: 10.5px; text-transform: uppercase; letter-spacing: 1.2px; color: var(--mut); margin-bottom: 7px; display: flex; justify-content: space-between; align-items: center; }
+button, select, input[type=text] { font: inherit; color: var(--fg); background: var(--bg2); border: 1px solid var(--line); border-radius: 7px; padding: 5px 8px; }
+button { cursor: pointer; } button:hover { background: rgba(255,255,255,0.13); }
+button.on { background: var(--acc); color: #111; border-color: var(--acc); }
+button.small { padding: 3px 7px; font-size: 11.5px; }
+select { width: 100%; } select option { background: #222; }
+input[type=text] { width: 100%; }
+input[type=range] { width: 100%; accent-color: var(--acc); }
+.row { display: flex; gap: 6px; align-items: center; margin: 5px 0; }
+.row > label { flex: 0 0 74px; color: var(--mut); }
+.row > .val { flex: 0 0 68px; white-space: nowrap; text-align: right; font-variant-numeric: tabular-nums; color: var(--fg); }
+.row > select { flex: 1; width: auto; }
+.row > button.nudge { flex: 0 0 30px; font-size: 14px; line-height: 1; padding: 3px 0; }
+.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 5px; }
+.grid3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 5px; }
+.seg { display: flex; border: 1px solid var(--line); border-radius: 7px; overflow: hidden; }
+.seg button { flex: 1; border: none; border-radius: 0; background: transparent; }
+.seg button.on { background: var(--acc); color: #111; }
+.chk { display: flex; align-items: center; gap: 6px; padding: 2px 0; cursor: pointer; user-select: none; }
+.chk input { accent-color: var(--acc); margin: 0; }
+#showList .chk .nm { flex: 1; }
+#showList .chk .only { font-size: 10.5px; color: #9a9790; padding: 0 3px; border-radius: 3px; visibility: hidden; }
+#showList .chk:hover .only { visibility: visible; }
+#showList .chk .only:hover { color: var(--acc); background: rgba(255,255,255,0.08); }
+.sw { display: inline-block; width: 10px; height: 10px; border-radius: 3px; border: 1px solid rgba(0,0,0,0.3); flex: 0 0 auto; }
+#results { margin-top: 5px; max-height: 210px; overflow-y: auto; }
+#results div { padding: 4px 6px; border-radius: 5px; cursor: pointer; display: flex; justify-content: space-between; gap: 6px; }
+#results div:hover, #results div.act { background: rgba(255,255,255,0.12); }
+#results .n { color: var(--mut); font-variant-numeric: tabular-nums; white-space: nowrap; }
+#results .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#selType { margin-top: 6px; padding: 7px 8px; border-radius: 8px; background: rgba(233,237,76,0.12); border: 1px solid rgba(233,237,76,0.35); display: none; }
+#selType b { color: var(--acc); }
+details summary { cursor: pointer; color: var(--mut); margin: 4px 0; }
+#views button { text-align: left; font-size: 11.5px; padding: 5px 7px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#inspect { position: fixed; right: 12px; top: 12px; width: 330px; max-height: calc(100vh - 230px); overflow-y: auto; padding: 14px; font-size: 12.5px; display: none; z-index: 5; }
+#inspect h2 { font-size: 16px; margin: 0 0 2px; color: var(--acc); }
+#inspect .kv { display: grid; grid-template-columns: 96px 1fr; gap: 3px 8px; margin: 9px 0; }
+#inspect .kv div:nth-child(odd) { color: var(--mut); }
+#inspect a { color: #8fc3ff; text-decoration: none; margin-right: 10px; }
+#inspect .close { position: absolute; right: 10px; top: 8px; background: none; border: none; font-size: 18px; color: var(--mut); }
+.badge { display: inline-block; padding: 1px 6px; border-radius: 5px; font-size: 10.5px; font-weight: bold; margin-right: 4px; }
+.badge.pdb { background: #4C8CD9; color: white; } .badge.af { background: #F5A84C; color: #222; }
+#hud { position: fixed; left: 324px; bottom: 12px; padding: 7px 10px; font-size: 11px; color: var(--mut); font-variant-numeric: tabular-nums; z-index: 4; line-height: 1.45; pointer-events: none; transition: left .25s; }
+#panel.collapsed ~ #hud { left: 12px; }
+#hud b { color: var(--fg); font-weight: normal; }
+#minimapWrap { position: fixed; right: 12px; bottom: 12px; padding: 8px; z-index: 4; }
+#minimap { width: 180px; height: 180px; display: block; border-radius: 8px; cursor: crosshair; }
+#minimapWrap .t { font-size: 10px; color: var(--mut); text-transform: uppercase; letter-spacing: 1px; margin-bottom: 4px; display: flex; justify-content: space-between; }
+#caption { position: fixed; left: 50%; transform: translateX(-50%); bottom: 22px; max-width: 640px; padding: 12px 18px; font-size: 14px; line-height: 1.45; display: none; z-index: 4; text-align: center; }
+#caption b { color: var(--acc); display: block; font-size: 15px; margin-bottom: 3px; }
+#scalebar { position: fixed; right: 216px; bottom: 22px; z-index: 4; color: #222; font-size: 11px; text-align: center; pointer-events: none; text-shadow: 0 0 3px #fff, 0 0 3px #fff; }
+#scalebar .bar { height: 5px; background: #222; border: 1px solid #fff; margin-bottom: 3px; }
+#hover { position: fixed; pointer-events: none; padding: 4px 8px; font-size: 11.5px; border-radius: 6px; background: rgba(20,20,24,0.88); color: #fff; display: none; z-index: 8; white-space: nowrap; }
+#legend { margin-top: 6px; display: grid; grid-template-columns: 1fr 1fr; gap: 3px 8px; font-size: 11px; color: var(--mut); }
+#legend div { display: flex; align-items: center; gap: 5px; }
+.modal { position: fixed; inset: 0; background: rgba(0,0,0,0.45); display: none; z-index: 20; align-items: center; justify-content: center; }
+.modal .box { width: min(860px, 92vw); max-height: 86vh; overflow-y: auto; padding: 20px 24px; font-size: 13px; line-height: 1.55; position: relative; }
+.modal .box h2 { margin-top: 0; color: var(--acc); font-size: 18px; }
+.modal .box h3 { margin-bottom: 4px; font-size: 14px; }
+.modal .box.doc { width: min(980px, 94vw); max-height: 90vh; }
+.doc h1 { margin-top: 0; color: var(--acc); font-size: 20px; }
+.doc h2 { margin: 22px 0 6px; color: var(--acc); font-size: 16px; }
+.doc h3 { margin: 14px 0 4px; font-size: 13.5px; }
+.doc ul, .doc ol { padding-left: 20px; margin: 4px 0 8px; }
+.doc table { border-collapse: collapse; margin: 6px 0 10px; font-size: 12px; width: 100%; }
+.doc th, .doc td { border-bottom: 1px solid rgba(255,255,255,0.12); padding: 3px 8px 3px 0; text-align: left; vertical-align: top; }
+.doc th { color: var(--mut); font-weight: 600; }
+.doc code { font-size: 11.5px; background: rgba(255,255,255,0.08); padding: 0 3px; border-radius: 3px; }
+.doc a { color: #8fc3ff; }
+.modal .close { position: absolute; right: 14px; top: 10px; background: none; border: none; font-size: 22px; color: var(--mut); }
+#molBox { width: min(1100px, 94vw); height: min(780px, 88vh); padding: 0; overflow: hidden; display: flex; flex-direction: column; }
+#molHead { padding: 9px 14px; display: flex; justify-content: space-between; align-items: center; font-size: 13px; border-bottom: 1px solid var(--line); }
+#molHost { flex: 1; position: relative; background: #fff; }
+#loading { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; z-index: 30; background: #F6F1E7; color: #333; flex-direction: column; gap: 14px; }
+#loading .t { font-size: 22px; letter-spacing: .3px; } #loading .m { font-size: 13px; color: #666; min-height: 18px; }
+#loading .pb { width: 360px; height: 6px; background: #e3dccd; border-radius: 4px; overflow: hidden; } #loading .pb div { height: 100%; width: 0; background: #FF9400; transition: width .2s; }
+#loading .err { max-width: 620px; color: #a33; font-size: 13.5px; line-height: 1.5; display: none; background: #fff; padding: 14px 18px; border-radius: 10px; border: 1px solid #e5c7c7; }
+kbd { background: rgba(255,255,255,0.12); border: 1px solid var(--line); border-radius: 4px; padding: 0 5px; font-size: 11px; }
+.keys { display: grid; grid-template-columns: 150px 1fr; gap: 4px 12px; }
+#toast { position: fixed; top: 16px; left: 50%; transform: translateX(-50%); padding: 8px 14px; font-size: 12.5px; display: none; z-index: 25; }
+#dynPanel { position: fixed; top: 12px; left: 50%; transform: translateX(-50%); width: 380px; max-width: calc(100vw - 24px); padding: 10px 14px; font-size: 12px; display: none; z-index: 5; }
+#dynPanel .dh { font-weight: bold; color: var(--acc); margin: 0 18px 4px 0; } #dynPanel .dh span { font-weight: normal; color: var(--mut); }
+#dynPanel .close { position: absolute; right: 8px; top: 5px; background: none; border: none; font-size: 18px; color: var(--mut); }
+#dynPanel #dynPlay { flex: 0 0 34px; } #dynPanel #dynT { flex: 0 0 auto; min-width: 84px; }
+#dynPanel .dl { display: grid; grid-template-columns: 1.4fr 1fr 1fr 1fr; gap: 2px 8px; margin: 6px 0 4px; font-variant-numeric: tabular-nums; }
+#dynPanel .dl div { display: flex; align-items: center; gap: 5px; }
+  #legend .modsw { cursor: pointer; border-radius: 3px; }
+  #legend .modsw:hover { background: rgba(255,255,255,0.08); }
+  #legend .modsw.on { background: rgba(255,255,255,0.18); font-weight: 600; }
+</style>
+</head>
+<body>
+<canvas id="gpu" tabindex="0"></canvas>
+
+<aside id="panel" class="glass">
+  <h1>Jurkat T cell</h1>
+  <div class="sub">Human T lymphoblast · OpenOrganelle jrc_jurkat-1, cell 1 · <span class="cubeSize">1.6 µm</span><span class="subvolWord"> sub-volume</span><br><span id="subCount">Macromolecules of the sub-volume, each a PDB or AlphaFold structure</span></div>
+
+  <section>
+    <div class="h">Find a molecule</div>
+    <input id="search" type="text" placeholder="Gene, protein, UniProt (e.g. GAPDH, ribosome, P04406)" autocomplete="off" spellcheck="false" />
+    <div id="results"></div>
+    <div id="selType"></div>
+  </section>
+
+  <section>
+    <div class="h">Guided views <span><button id="tourBtn" class="small">▶ Tour</button></span></div>
+    <div id="views" class="grid2"></div>
+  </section>
+
+  <section>
+    <div class="h">Cut plane <label class="chk"><input type="checkbox" id="cutOn" checked> on</label></div>
+    <div class="grid3" style="margin-bottom:5px">
+      <button id="axX" class="small">X</button><button id="axY" class="small">Y</button><button id="axZ" class="small">Z</button>
+    </div>
+    <div class="grid2" style="margin-bottom:5px">
+      <button id="alignView" class="small" title="Set the plane perpendicular to the current view, through the view centre">Align to view</button>
+      <button id="followView" class="small" title="Plane follows the camera while you orbit">Follow camera</button>
+    </div>
+    <div class="row"><label>Position</label><input type="range" id="planeD" min="-2200" max="2200" step="1"><span class="val" id="planeDv"></span></div>
+    <div class="row"><label>Fine step</label>
+      <button id="nudgeBack" class="small nudge" title="Move the plane back one step (hold to repeat)">−</button>
+      <select id="nudgeStep" title="Step for these buttons, Alt+wheel and Alt+, / Alt+.">
+        <option value="0.1">0.1 nm</option><option value="0.25">0.25 nm</option><option value="0.5" selected>0.5 nm</option>
+        <option value="1">1 nm</option><option value="2">2 nm</option><option value="5">5 nm</option>
+        <option value="10">10 nm</option><option value="50">50 nm</option>
+      </select>
+      <button id="nudgeFwd" class="small nudge" title="Move the plane forward one step (hold to repeat)">+</button></div>
+    <div class="row"><label>Slab depth</label><input type="range" id="slab" min="0" max="1000" step="1"><span class="val" id="slabv"></span></div>
+    <div class="grid2"><button id="sweepBtn" class="small">Sweep through cube</button><button id="flipBtn" class="small">Flip side</button></div>
+  </section>
+
+  <section>
+    <div class="h">Display</div>
+    <div class="seg" style="margin-bottom:6px"><button id="modeSection" class="on">Molecules</button><button id="modeOrg">Organelles</button><button id="modeMem" title="The whole cell's membranes in 3D, coloured by compartment (no cut plane)">Membranes</button></div>
+    <select id="colorMode">
+      <option value="0">Goodsell (compartment palette)</option>
+      <option value="1">Structure source: PDB vs AlphaFold</option>
+      <option value="2">AlphaFold confidence (pLDDT)</option>
+      <option value="3">Abundance (copies per cell)</option>
+      <option value="4">Random per protein type</option>
+      <option value="5">Compartment</option>
+      <option value="6">Interaction module (STRING)</option>
+    </select>
+    <div id="legend"></div>
+    <div class="grid2" style="margin-top:6px">
+      <label class="chk"><input type="checkbox" id="shaded" checked> 3D lighting</label>
+      <label class="chk"><input type="checkbox" id="outlines" checked> Outlines</label>
+    </div>
+    <div class="row"><label title="Illustrative, not simulated. AlphaFold monomers move through the conformers of their pool-prediction ensembles; every molecule also wobbles as a rigid body, and other low-confidence regions flex">Motion</label>
+      <select id="motion"><option value="0" selected>Off</option><option value="1">On</option><option value="2">Exaggerated (2×)</option></select></div>
+  </section>
+
+  <section>
+    <div class="h" style="display:flex;justify-content:space-between;align-items:center">Show <span><button class="small" id="hideAll">Hide all</button> <button class="small" id="showAll">Show all</button></span></div>
+    <div class="grid2" id="showList"></div>
+    <details><summary>Compartments</summary><div id="regionList"></div></details>
+  </section>
+
+  <section>
+    <div class="h">Performance</div>
+    <div class="row"><label>Quality</label><select id="quality">
+      <option value="auto">Auto (adapts to frame rate)</option><option value="low">Low</option><option value="med">Medium</option><option value="high">High</option><option value="ultra">Ultra</option>
+    </select></div>
+    <label class="chk"><input type="checkbox" id="detailOn" checked> Procedural lipids near camera</label>
+  </section>
+
+  <section style="display:flex; gap:6px; flex-wrap: wrap">
+    <button id="shotBtn" class="small">Screenshot (2×)</button>
+    <button id="helpBtn" class="small">Controls</button>
+    <button id="aboutBtn" class="small">About the model</button>
+    <button id="modelBtn" class="small" title="Full description: data sources, assumptions, design decisions, validation">Model details</button>
+  </section>
+</aside>
+<button id="panelToggle" title="Hide/show panel">‹</button>
+
+<div id="hud" class="glass"></div>
+<div id="inspect" class="glass"></div>
+<div id="minimapWrap" class="glass"><div class="t"><span>Section map</span><span id="mmLabel"></span></div><canvas id="minimap" width="360" height="360"></canvas></div>
+<div id="scalebar"><div class="bar"></div><span></span></div>
+<div id="caption" class="glass"></div>
+<div id="dynPanel" class="glass"></div>
+<div id="hover"></div>
+<div id="toast" class="glass"></div>
+
+<div id="molModal" class="modal"><div id="molBox" class="glass box"><div id="molHead"><span id="molTitle"></span><span><a id="molLink" target="_blank" style="color:#8fc3ff;margin-right:14px"></a><button id="molClose" class="small">Close</button></span></div><div id="molHost"></div></div></div>
+
+<div id="helpModal" class="modal"><div class="glass box"><button class="close">×</button>
+  <h2>Controls</h2>
+  <div class="keys">
+    <div><kbd>Left drag</kbd></div><div>Orbit around the view centre</div>
+    <div><kbd>Right drag</kbd> / <kbd>Shift</kbd>+drag</div><div>Pan</div>
+    <div><kbd>Wheel</kbd></div><div id="zoomHelp">Zoom (from the whole cell, about 15 µm, to the <span class="cubeSize">1.6 µm</span> sub-volume and down to single residues)</div>
+    <div><kbd>Cmd</kbd>+<kbd>Wheel</kbd></div><div>Slow zoom</div>
+    <div><kbd>Shift</kbd>+<kbd>Wheel</kbd></div><div>Move the cut plane through the cell</div>
+    <div><kbd>Alt</kbd>/<kbd>Option</kbd>+<kbd>Wheel</kbd></div><div>Move the cut plane in fine steps (one Fine step per notch, 0.5 nm by default)</div>
+    <div><kbd>Click</kbd></div><div>Inspect a molecule, lipid leaflet or compartment</div>
+    <div><kbd>Double-click</kbd></div><div>Fly to that point</div>
+    <div><kbd>W A S D</kbd> <kbd>Q E</kbd></div><div>Fly forward / left / back / right / down / up</div>
+    <div><kbd>Z</kbd> <kbd>X</kbd></div><div>Roll the camera</div>
+    <div><kbd>C</kbd></div><div>Toggle cut plane</div>
+    <div><kbd>V</kbd></div><div>Align cut plane to view</div>
+    <div><kbd>[</kbd> <kbd>]</kbd></div><div>Thinner / thicker slab</div>
+    <div><kbd>,</kbd> <kbd>.</kbd></div><div>Move plane backward / forward (with <kbd>Alt</kbd>: one Fine step)</div>
+    <div><kbd>O</kbd></div><div>Molecules / organelles view</div>
+    <div><kbd>M</kbd></div><div>Membranes view (whole cell, no cut plane)</div>
+    <div><kbd>1</kbd>–<kbd>9</kbd>, <kbd>0</kbd></div><div>Guided views</div>
+    <div><kbd>T</kbd></div><div>Start / stop tour</div>
+    <div><kbd>P</kbd></div><div>Screenshot</div>
+    <div class="dynHelp"><kbd>G</kbd> <kbd>K</kbd></div><div class="dynHelp">Show / hide tracer dynamics; play / pause them (when the build has a dynamics example)</div>
+    <div><kbd>Esc</kbd></div><div>Clear selection and highlight</div>
+  </div>
+</div></div>
+
+<div id="aboutModal" class="modal"><div class="glass box"><button class="close">×</button><div id="aboutBody"></div></div></div>
+
+<div id="modelModal" class="modal"><div class="glass box doc"><button class="close">×</button><div id="modelBody"></div></div></div>
+
+<div id="loading"><div class="t">Building a Jurkat T cell sub-volume…</div><div class="pb"><div></div></div><div class="m"></div><div class="err"></div></div>
+
+<script type="module" src="/src/main.ts"></script>
+</body>
+</html>

@@ -1,0 +1,13 @@
+LICENCE TO BE CHOSEN
+
+The licence for the code in this repository has not been chosen yet (Pedro Beltrao to decide).
+Until a licence is added here, all rights are reserved by the authors.
+
+Notes for the decision:
+- Parts of the pipeline (jurkat/yc/) and of the viewer (jurkat/viewer/app/) are derived from the yeast whole-cell
+  viewer by Gudmundur Magnusson (github.com/zoidpuff/yeast_cell_viewer), which has no licence file. Agree a licence
+  and the attribution with its author before publishing.
+- The viewer bundles Mol* (MIT) at build time.
+- The model data (Hugging Face dataset) derive from CC BY 4.0 sources (OpenOrganelle, AlphaFold DB, UniProt,
+  STRING) and others; see README.md, "Data sources and licences". A data licence such as CC BY 4.0 would keep the
+  attribution chain.

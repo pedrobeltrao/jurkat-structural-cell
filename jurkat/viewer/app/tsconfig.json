@@ -1,0 +1,1 @@
+{ "compilerOptions": { "target": "ES2022", "module": "ESNext", "moduleResolution": "bundler", "lib": ["ES2022","DOM","DOM.Iterable","WebWorker"], "types": ["@webgpu/types","vite/client"], "strict": false, "noImplicitAny": false, "skipLibCheck": true, "noEmit": true, "allowImportingTsExtensions": true, "isolatedModules": true }, "include": ["src"] }

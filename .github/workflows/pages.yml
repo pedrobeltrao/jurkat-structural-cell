@@ -1,0 +1,63 @@
+# Build the WebGPU viewer and deploy it to GitHub Pages (https://pedrobeltrao.github.io/jurkat-structural-cell/).
+# The model data are not in the repository: config.json points the viewer at DATA_BASE, a repository variable
+# (Settings > Secrets and variables > Actions > Variables), defaulting to the Hugging Face dataset below.
+# Pages: Settings > Pages > Source = "GitHub Actions".
+name: Deploy viewer to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+    paths: ["jurkat/viewer/**", ".github/workflows/pages.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+env:
+  DATA_BASE: ${{ vars.DATA_BASE || 'https://huggingface.co/datasets/pedrobeltrao/jurkat-structural-cell-data/resolve/main/web_full_v3/' }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: jurkat/viewer/app
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: jurkat/viewer/app/package-lock.json
+      - run: npm ci
+      - name: Type-check
+        run: npx tsc --noEmit -p .
+      - name: Build (Vite, relative base './' so the site works under /jurkat-structural-cell/)
+        run: |
+          mkdir -p public
+          rm -rf public/molstar && cp -r node_modules/molstar/build/viewer public/molstar
+          npx vite build
+      - name: Write config.json (data location)
+        run: |
+          printf '{"data_base": "%s"}\n' "$DATA_BASE" > dist/config.json
+          cat dist/config.json
+          touch dist/.nojekyll
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: jurkat/viewer/app/dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
