@@ -352,7 +352,7 @@ def main():
         gj = json.load(open(f"{out}/geometry.json"))
         gj["fields"] = web_fields_whole(cell, out, sp=a.field_sp, sp_thin=a.field_sp_thin)
         json.dump(gj, open(f"{out}/geometry.json", "w"), separators=(",", ":"))
-        sp = split_large(out); json.dump(dict(v=time.strftime("%Y%m%d%H%M%S")), open(f"{out}/version.json", "w"))
+        sp = split_large(out); write_version(out)
         if os.path.exists(f"{out}/encode_meta.json"):
             m = json.load(open(f"{out}/encode_meta.json")); m.update(split=sp, field_sp_nm=a.field_sp, field_sp_thin_nm=a.field_sp_thin)
             json.dump(m, open(f"{out}/encode_meta.json", "w"), indent=1)
@@ -496,6 +496,13 @@ def write_library(a, out, ids, lib, stride, cnt, BR, MASS):
     log(f"library: {len(ids)} types, {len(B_):,} beads, {so:,} spheres")
 
 
+def write_version(out):
+    """version.json: build stamp (cache key for every data URL) and the optional files this build does not have, which
+    the viewer then never requests (no 404s): motion modes, organisation layer, tracer dynamics"""
+    absent = [p for p in ("library/modes.json", "library/organisation.json", "dynamics.json") if not os.path.exists(f"{out}/{p}")]
+    json.dump(dict(v=time.strftime("%Y%m%d%H%M%S"), absent=absent), open(f"{out}/version.json", "w"))
+
+
 def split_large(out):
     """split files above SPLIT_MB into parts path.000, path.001, ... (data.ts / worker.ts read split.json); files that
     were split by an earlier run (whole file gone) keep their entry"""
@@ -562,7 +569,7 @@ def assemble(a, out, work, NT, half, dt_total, n_total, coarsened, cell):
                  width=2 * float(cell.G[0]) * 0.75, slab=60)
     json.dump(bm, open(f"{out}/bookmarks.json", "w"), indent=1)
     sp = split_large(out)
-    json.dump(dict(v=time.strftime("%Y%m%d%H%M%S")), open(f"{out}/version.json", "w"))
+    write_version(out)
     files = [os.path.join(dp, f) for dp, _, fs in os.walk(out) for f in fs]
     sizes = np.array([os.path.getsize(f) for f in files])
     big = files[int(sizes.argmax())]

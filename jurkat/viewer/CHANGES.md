@@ -165,3 +165,68 @@ Remaining `tsc --noEmit` errors: 9 `Uint32Array<ArrayBufferLike>` vs `GPUAllowSh
     - lipid detail generation;
     - the Overview block parser, hide/show and eviction, with a stubbed GPU queue.
   - `check_data.py` passes on the folder and over HTTP Range.
+
+## 2026-11-09 (2): whole-cell section fits the budget; plane slider; Hugging Face rate limit
+Pedro's test of the live site: only a central patch had molecules ("7.96 M molecules in 900 tiles, memory budget
+reached"). Each tile uploaded all its instances although a 40–60 nm slab shows 20–30% of them.
+- **Slab-clipped uploads** (`worker.ts` `clipTile`, `tiles.ts`). With a cut in whole-cell builds, the worker keeps
+  only what reaches the slab ± a margin:
+  - instances whose bounding sphere reaches it;
+  - polymer beads inside it;
+  - mesh triangles that reach it.
+
+  Ghosts and lipids stay worker-side: lipid detail is generated for the slab range as before.
+- **Margin**: the widest of 100, 60, 30, 15 or 6 nm whose estimated section total fits the budget (the estimate
+  includes half a page of waste per tile). For the whole cell at 60 nm with 8 M, that is 6 nm: a 200 nm margin would
+  triple the section.
+- **Caches** (worker):
+  - compressed tile bytes in an LRU of 200–500 MB in total (navigator.deviceMemory × 64 MB), split over the
+    workers;
+  - decoded tiles in an LRU of 48.
+- **Re-clipping**: when the slab leaves a tile's clipped range, the tile is re-clipped from these caches with no
+  refetch. This happens once the plane has rested 250 ms, or at once for uploads that no longer reach the slab
+  (sweeps, drags). The old upload stays until its replacement arrives, so the section has no holes while it reloads.
+- **Desired set**: in cut mode, every tile meeting the slab in view, nearest to the view centre first. The budget
+  counts clipped instances: the loaded count, or the tile's estimated slab share.
+- **Budget scaled to the device** (`Renderer.detail`; Performance panel "Detail" selector, saved in localStorage;
+  `?detail=`): low 4 M, medium 8 M, high 16 M molecules, capped by the storage-binding limit. Auto is medium, or low
+  on fallback / software adapters (SwiftShader).
+- **Stand-ins only where needed**: they are loaded only for blocks with section tiles whose molecules are missing,
+  and evicted otherwise.
+- **HUD**: "section N% of M tiles", the number of stand-ins actually shown, and the budget value when it is reached.
+  "MB streamed" counts network bytes only.
+- **Hugging Face HTTP 429**: per-tile Range requests to `resolve/main` hit the rate limit after about 2,800
+  requests.
+  - The worker now remembers each shard's redirect target (the signed CDN URL; 20 min, re-resolved on refusal), so
+    later ranges go to the CDN.
+  - Each shard is resolved once per worker, because tiles go to workers by block.
+  - 429/503 are retried with Retry-After or back-off (worker and `data.ts`).
+  - Result: one section is 365 hub requests and 3,075 CDN requests, with no 429.
+- **404s**: `library/modes.json`, `library/organisation.json` and `dynamics.json` were requested although the build
+  has none. `version.json` now lists `"absent"` files (`jenc_full.py write_version`), and `data.ts isAbsent` skips
+  them. `data/derived/web_full_v3/version.json` was patched with the same `v`; it must be re-uploaded to Hugging
+  Face.
+- **Cut-plane Position slider**: it was hard-coded at ±2,200 nm (a yeast value). It now spans the model box along
+  the current plane normal ± 100 nm, updated on every plane change (axis buttons, Align to view).
+  - Whole cell: Z −7,372..7,996, X −8,116..8,212, Y −5,164..5,212 nm. Cube: ±900 nm.
+  - Sweep runs over the same range.
+  - Keyboard and wheel steps, bookmarks, pan and fly-to were already unclamped (checked).
+  - The section map fits the whole cell, and the help text gives the cell size ("about 16 µm across").
+- **Before / after** (Z plane 0, 60 nm slab, 8 M budget; headless SwiftShader):
+
+  | | Before (live site) | After (local server) | After (Hugging Face data) |
+  |---|---|---|---|
+  | Tiles loaded | 827 | 2,902 | 2,902 |
+  | Molecules | 7.49 M | 6.15 M | 6.2 M |
+  | Section with detail | 28.5% | 100% | 100% |
+  | Settled after | 38 s | 27 s | 68 s |
+  | Downloaded | 117 MB | 470 MB | 470 MB |
+  | GPU pools / JS heap | 758 / 561 MB | 758 / 527 MB | 758 / 497 MB |
+
+  Notes:
+  - After a 40 nm plane move, re-clipping all 2,902 tiles from the caches took 22 s under SwiftShader, with no
+    network.
+  - Auto on SwiftShader (low, 4 M) covers 53% of the section, with stand-ins for the rest.
+  - Without a cut (camera at 40 µm), the plasma-membrane shell loads to the budget (1,257 tiles, 7.5 M) and the HUD
+    reports the budget.
+  - Cube mode loads all 128 tiles in view as before.

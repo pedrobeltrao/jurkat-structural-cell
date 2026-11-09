@@ -24,6 +24,9 @@ export class Renderer {
   device!: GPUDevice; ctx!: GPUCanvasContext; format!: GPUTextureFormat; canvas: HTMLCanvasElement;
   limits: Record<string, number> = {};
   adapterInfo = '';
+  // molecule budget (instance pool): 'auto' = medium (8 M), low (4 M) on software / fallback adapters; low 4 M,
+  // medium 8 M, high 16 M; always capped by the device's storage-binding limit (16 B per instance)
+  detail = 'auto'; detailUsed = 'medium';
   // capacities
   instPages = 0; lipPages = 0; freePages = 0; capL0 = 0; capL1 = 0; capL2 = 0; capLip = 0; capFree = 0;
   maxSlots = 4096;
@@ -81,7 +84,14 @@ export class Renderer {
       throw new Error(`The compartment fields (${(geo.F.byteLength / 1048576).toFixed(0)} MB) exceed this GPU's storage buffer limit (${(maxBind / 1048576).toFixed(0)} MB).`);
     // capacities sized to the device (16 B per instance / sphere record)
     const capRecords = (want: number) => Math.min(want, Math.floor(maxBind / 16));
-    this.instPages = Math.floor(capRecords(8 * 1024 * 1024) / S.PAGE);
+    let lvl = this.detail;
+    if (lvl === 'auto') {
+      const soft = !!(adapter as any).isFallbackAdapter || !!(adapter as any).info?.isFallbackAdapter || /swiftshader|llvmpipe|software/i.test(this.adapterInfo);
+      lvl = soft ? 'low' : 'medium';
+    }
+    const wantM = ({ low: 4, medium: 8, high: 16 } as Record<string, number>)[lvl] ?? 8;
+    this.instPages = Math.floor(capRecords(wantM * 1024 * 1024) / S.PAGE);
+    this.detailUsed = `${lvl} (${(this.instPages * S.PAGE / 1048576).toFixed(0)} M)`;
     this.lipPages = Math.floor(capRecords(8 * 1024 * 1024) / S.SPAGE);
     this.freePages = Math.floor(capRecords(10 * 1024 * 1024) / S.SPAGE);
     this.capL0 = Math.min(4 * 1024 * 1024, Math.floor(maxBind / 8) - 2 * 1024 * 1024);

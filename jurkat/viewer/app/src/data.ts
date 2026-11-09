@@ -26,8 +26,14 @@ async function resolveDataBase(): Promise<string> {
 export const DATA_BASE: string = await resolveDataBase();
 // data/version.json changes on every deploy; it is read uncached and appended to every data URL so a browser never mixes
 // cached files from two builds (type indices shift between builds)
-export const DATA_VER: Promise<string> = fetch(DATA_BASE + 'version.json', { cache: 'no-store' })
-  .then(r => (r.ok ? r.json() : { v: '' })).then(j => String(j.v ?? '')).catch(() => '');
+const VERSION: Promise<any> = fetch(DATA_BASE + 'version.json', { cache: 'no-store' })
+  .then(r => (r.ok ? r.json() : {})).catch(() => ({}));
+export const DATA_VER: Promise<string> = VERSION.then(j => String(j?.v ?? ''));
+/** optional files the build declares absent (version.json "absent", jenc_full.py): not requested, so no 404s */
+export async function isAbsent(path: string): Promise<boolean> {
+  const a = (await VERSION)?.absent;
+  return Array.isArray(a) && a.includes(path);
+}
 export const verQuery = (v: string) => (v ? `?v=${encodeURIComponent(v)}` : '');
 
 export function b64ToBytes(b64: string): Uint8Array {
@@ -51,13 +57,22 @@ export async function gunzipIfNeeded(buf: ArrayBuffer): Promise<ArrayBuffer> {
 const SPLIT: Promise<Record<string, number>> = fetch(DATA_BASE + 'split.json', { cache: 'no-store' })
   .then(r => (r.ok ? r.json() : {})).catch(() => ({}));
 
+/** fetch with retries on 429 / 503 (rate-limited hosts such as Hugging Face): Retry-After or 1, 2, 4, 8 s */
+async function fetchRetry(url: string): Promise<Response> {
+  for (let k = 0; ; k++) {
+    const r = await fetch(url);
+    if ((r.status !== 429 && r.status !== 503) || k >= 4) return r;
+    const ra = Number(r.headers.get('retry-after'));
+    await new Promise(res => setTimeout(res, ra > 0 ? Math.min(ra, 30) * 1000 : 1000 * 2 ** k));
+  }
+}
 export async function fetchBin(path: string, onProgress?: (n: number, total: number) => void): Promise<ArrayBuffer> {
   const emb = window.__YC_EMBED__;
   if (emb && emb[path] !== undefined) return gunzipIfNeeded(b64ToBytes(emb[path]).buffer as ArrayBuffer);
   const cfg = await SPLIT; const np = cfg[path];
   const b64 = !!cfg._b64 && !path.endsWith('.json');
   const raw = async (p: string) => {
-    const r = await fetch(DATA_BASE + p + (b64 ? '.txt' : '') + verQuery(await DATA_VER));
+    const r = await fetchRetry(DATA_BASE + p + (b64 ? '.txt' : '') + verQuery(await DATA_VER));
     if (!r.ok) throw new Error(`HTTP ${r.status} for ${p}`);
     return b64 ? b64ToBytes(await r.text()).buffer as ArrayBuffer : await r.arrayBuffer();
   };
@@ -71,7 +86,7 @@ export async function fetchBin(path: string, onProgress?: (n: number, total: num
     for (const b of parts) { out.set(new Uint8Array(b), o); o += b.byteLength; }
     return gunzipIfNeeded(out.buffer);
   }
-  const r = await fetch(DATA_BASE + path + verQuery(await DATA_VER));
+  const r = await fetchRetry(DATA_BASE + path + verQuery(await DATA_VER));
   if (!r.ok) throw new Error(`HTTP ${r.status} for ${path}`);
   if (!onProgress || !r.body) return gunzipIfNeeded(await r.arrayBuffer());
   const total = Number(r.headers.get('content-length') || 0);
@@ -187,13 +202,13 @@ export async function loadLibrary(progress: (msg: string, f: number) => void): P
   const st = new Float32Array(await fetchBin('library/spheretree.bin'));
   // optional: pool-ensemble motion modes per AlphaFold monomer type (exploration branch)
   let modes = new Uint32Array(4), modeIdx: Record<string, number[]> = {}, modeCap = 0;
-  try {
+  if (!(await isAbsent('library/modes.json'))) try {
     const mj = await fetchJson('library/modes.json');
     modes = new Uint32Array(await fetchBin('library/modes.bin')); modeIdx = mj.types; modeCap = mj.cap ?? 1.5;
   } catch { /* no modes in this build */ }
   // optional: STRING interaction module of each type (organisation layer of the packing)
   let modules: { label: string; n: number }[] = [], modOf: Record<string, number> = {};
-  try {
+  if (!(await isAbsent('library/organisation.json'))) try {
     const oj = await fetchJson('library/organisation.json');
     modules = oj.modules; modOf = oj.types;
   } catch { /* no organisation layer in this build */ }

@@ -17,12 +17,23 @@ let SDF: Float32Array | null = null;   // real-shape distance fields (fields.ts)
 
 interface Decoded {
   lo: [number, number, number];
-  inst: Uint32Array; ghost: Uint32Array;
+  inst: Uint32Array; ghost: Uint32Array; free: Float32Array;
   verts: Float32Array; normals: Float32Array; tris: Uint32Array; fmem: Uint8Array; vmem: Uint8Array;
 }
 let ver = '';
 const cache = new Map<number, Decoded>();
 const CACHE_MAX = 48;
+// compressed tile bytes as fetched (whole-cell shard members), LRU by bytes: re-clipping a tile after the cut plane
+// moves decodes it again from here instead of fetching it again. Budget from init (adaptive to device memory).
+const rawCache = new Map<number, ArrayBuffer>();
+let rawBytes = 0, rawMax = 400 * 1048576;
+function rawPut(i: number, b: ArrayBuffer) {
+  const o = rawCache.get(i); if (o) { rawBytes -= o.byteLength; rawCache.delete(i); }
+  rawCache.set(i, b); rawBytes += b.byteLength;
+  while (rawBytes > rawMax && rawCache.size > 1) {
+    const k = rawCache.keys().next().value!; rawBytes -= rawCache.get(k)!.byteLength; rawCache.delete(k);
+  }
+}
 
 let split: Record<string, number> = {};     // data/split.json, as data.ts fetchBin: parts path.NNN, base64 text at path.txt
 async function getRaw(path: string): Promise<ArrayBuffer> {
@@ -53,7 +64,7 @@ let rangeOk = true;
 function wholeShard(path: string): Promise<ArrayBuffer> {
   let p = shardCache.get(path);
   if (!p) {
-    p = fetch(base + path + (ver ? `?v=${encodeURIComponent(ver)}` : '')).then(r => {
+    p = fetchRetry(base + path + (ver ? `?v=${encodeURIComponent(ver)}` : '')).then(r => {
       if (!r.ok) throw new Error(`HTTP ${r.status} ${path}`);
       return r.arrayBuffer();
     });
@@ -63,29 +74,61 @@ function wholeShard(path: string): Promise<ArrayBuffer> {
   }
   return p;
 }
-async function getTileBytes(m: any): Promise<ArrayBuffer> {
+// Hosts that redirect each file request to a CDN (Hugging Face resolve/main -> signed CDN URL) rate-limit the
+// redirecting endpoint (HTTP 429 after a few thousand requests): the CDN URL of each shard is remembered for
+// RESOLVED_TTL and later ranges go there directly, so a section costs about one resolve per shard, not one per tile.
+const resolved = new Map<string, { url: string; t: number }>();
+const RESOLVED_TTL = 20 * 60 * 1000;
+const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
+/** fetch with retries on 429 / 503 (Retry-After or exponential back-off: 1, 2, 4, 8 s) */
+async function fetchRetry(url: string, init?: RequestInit): Promise<Response> {
+  for (let k = 0; ; k++) {
+    const r = await fetch(url, init);
+    if ((r.status !== 429 && r.status !== 503) || k >= 4) return r;
+    const ra = Number(r.headers.get('retry-after'));
+    await sleep(ra > 0 ? Math.min(ra, 30) * 1000 : 1000 * 2 ** k);
+  }
+}
+const resolving = new Map<string, Promise<unknown>>();   // first request of a shard in flight: others wait for its URL
+async function rangedFetch(path: string, off: number, n: number): Promise<Response> {
+  const hdr = { headers: { Range: `bytes=${off}-${off + n - 1}` } };
+  const pend = resolving.get(path);
+  if (pend && !resolved.has(path)) await pend.catch(() => null);
+  const R = resolved.get(path);
+  if (R && performance.now() - R.t < RESOLVED_TTL) {
+    const r = await fetchRetry(R.url, hdr);
+    if (r.ok) return r;
+    resolved.delete(path);                             // expired or refused signed URL: resolve again
+  }
+  const p = fetchRetry(base + path + (ver ? `?v=${encodeURIComponent(ver)}` : ''), hdr);
+  if (!resolving.has(path)) { resolving.set(path, p); p.finally(() => resolving.delete(path)).catch(() => null); }
+  const r = await p;
+  if (r.status === 206 && r.redirected && r.url) resolved.set(path, { url: r.url, t: performance.now() });
+  return r;
+}
+async function getTileBytes(m: any): Promise<ArrayBuffer> {      // compressed (gzip member) for shards
   if (!m.shard) return getBin(`tiles/${m.ix}_${m.iy}_${m.iz}.bin.gz`);
   const { path, off, n } = m.shard as { path: string; off: number; n: number };
   const cached = shardCache.get(path);
-  if (cached) return gunzip((await cached).slice(off, off + n));
+  if (cached) return (await cached).slice(off, off + n);
   if (rangeOk) {
     let r: Response | null = null;
     try {
-      r = await fetch(base + path + (ver ? `?v=${encodeURIComponent(ver)}` : ''), { headers: { Range: `bytes=${off}-${off + n - 1}` } });
+      r = await rangedFetch(path, off, n);
     } catch (e) {                                  // network / CORS failure of the ranged request
       console.warn('ranged fetch failed, using whole shards', e);
       rangeOk = false;
     }
     if (r) {
-      if (r.status === 206) return gunzip(await r.arrayBuffer());
+      if (r.status === 206) return await r.arrayBuffer();
       if (!r.ok) throw new Error(`HTTP ${r.status} ${path}`);
       const whole = r.arrayBuffer();               // Range ignored: this response is the whole shard
       shardCache.set(path, whole);
       while (shardCache.size > SHARD_CACHE_MAX) shardCache.delete(shardCache.keys().next().value!);
-      return gunzip((await whole).slice(off, off + n));
+      return (await whole).slice(off, off + n);
     }
   }
-  return gunzip((await wholeShard(path)).slice(off, off + n));
+  return (await wholeShard(path)).slice(off, off + n);
 }
 async function gunzip(buf: ArrayBuffer): Promise<ArrayBuffer> {
   const u = new Uint8Array(buf, 0, Math.min(2, buf.byteLength));
@@ -95,8 +138,51 @@ async function gunzip(buf: ArrayBuffer): Promise<ArrayBuffer> {
   return buf;
 }
 
+/** decoded tile (LRU of CACHE_MAX), from the compressed cache or the network */
+async function getDecoded(m: any, info?: { fetched: number }): Promise<Decoded> {   // info.fetched: network bytes
+  let D = cache.get(m.idx);
+  if (D) { cache.delete(m.idx); cache.set(m.idx, D); return D; }
+  let raw = rawCache.get(m.idx);
+  if (raw) { rawCache.delete(m.idx); rawCache.set(m.idx, raw); }
+  else { raw = await getTileBytes(m); if (info) info.fetched = raw.byteLength; if (m.shard) rawPut(m.idx, raw); }
+  const T = decodeTile(await gunzip(raw));
+  D = { lo: T.lo, inst: T.inst, ghost: T.ghost, free: T.free, verts: T.verts, normals: T.normals, tris: T.tris, fmem: T.fmem, vmem: T.vmem };
+  cache.set(m.idx, D);
+  while (cache.size > CACHE_MAX) cache.delete(cache.keys().next().value!);
+  return D;
+}
+
+// whole-cell section: keep only what can be seen in the slab. c = { n, lo, hi } with lo <= dot(n, p) <= hi (the cut
+// slab plus a margin, tiles.ts CLIP_M); instances by their bounding sphere, polymer beads by position, mesh triangles
+// that reach the range. null: everything (no cut, or the 1.6 um cube).
+function clipTile(D: Decoded, c: { n: number[]; lo: number; hi: number } | null) {
+  if (!c) return { inst: D.inst.slice(), free: D.free.slice(), ib: D.tris.slice() };
+  const [nx, ny, nz] = c.n, lo = D.lo, w = D.inst, nI = w.length / 4;
+  const keep = new Uint32Array(w.length); let k = 0;
+  const ox = lo[0] - Q_ORG, oy = lo[1] - Q_ORG, oz = lo[2] - Q_ORG;
+  for (let i = 0; i < nI; i++) {
+    const w1 = w[4 * i + 1], w2 = w[4 * i + 2];
+    const s = nx * (ox + (w1 & 0xFFFF) * QSTEP) + ny * (oy + (w1 >>> 16) * QSTEP) + nz * (oz + (w2 & 0xFFFF) * QSTEP);
+    const br = brArr[w[4 * i] & 0x3FFF];
+    if (s + br >= c.lo && s - br <= c.hi) { keep[4 * k] = w[4 * i]; keep[4 * k + 1] = w1; keep[4 * k + 2] = w2; keep[4 * k + 3] = w[4 * i + 3]; k++; }
+  }
+  const F = D.free, nF = F.length / 4, fo = new Float32Array(F.length); let kf = 0;
+  for (let i = 0; i < nF; i++) {
+    const s = nx * F[4 * i] + ny * F[4 * i + 1] + nz * F[4 * i + 2];
+    if (s >= c.lo - 1.5 && s <= c.hi + 1.5) { fo.set(F.subarray(4 * i, 4 * i + 4), 4 * kf); kf++; }
+  }
+  const V = D.verts, Tr = D.tris, nT = Tr.length / 3, ib = new Uint32Array(Tr.length); let kt = 0;
+  const sv = (j: number) => nx * V[3 * j] + ny * V[3 * j + 1] + nz * V[3 * j + 2];
+  for (let t = 0; t < nT; t++) {
+    const a = sv(Tr[3 * t]), b = sv(Tr[3 * t + 1]), cc = sv(Tr[3 * t + 2]);
+    if (Math.max(a, b, cc) >= c.lo - 1 && Math.min(a, b, cc) <= c.hi + 1) { ib[3 * kt] = Tr[3 * t]; ib[3 * kt + 1] = Tr[3 * t + 1]; ib[3 * kt + 2] = Tr[3 * t + 2]; kt++; }
+  }
+  return { inst: keep.slice(0, 4 * k), free: fo.slice(0, 4 * kf), ib: ib.slice(0, 3 * kt) };
+}
+
 async function init(msg: any) {
   base = msg.base; G = msg.G; SDF = msg.F ?? null;
+  if (msg.rawBudgetMB) rawMax = msg.rawBudgetMB * 1048576;
   try { const r = await fetch(base + 'version.json', { cache: 'no-store' }); if (r.ok) ver = String((await r.json()).v ?? ''); } catch { ver = ''; }
   try { const r = await fetch(base + 'split.json', { cache: 'no-store' }); if (r.ok) split = await r.json(); } catch { split = {}; }
   if (msg.embedded) embedded = msg.embedded;
@@ -384,27 +470,19 @@ self.onmessage = async (ev: MessageEvent) => {
     }
     await ready;
     if (m.cmd === 'load') {
-      const buf = await getTileBytes(m);
-      const T = decodeTile(buf);
+      const info = { fetched: 0 }; const T = await getDecoded(m, info); const fetched = info.fetched;
       const nV = T.verts.length / 3;
       const vb = new Float32Array(nV * 8), vbu = new Uint32Array(vb.buffer);
       for (let i = 0; i < nV; i++) {
         vb[8 * i] = T.verts[3 * i]; vb[8 * i + 1] = T.verts[3 * i + 1]; vb[8 * i + 2] = T.verts[3 * i + 2]; vbu[8 * i + 3] = T.vmem[i];
         vb[8 * i + 4] = T.normals[3 * i]; vb[8 * i + 5] = T.normals[3 * i + 1]; vb[8 * i + 6] = T.normals[3 * i + 2];
       }
-      cache.set(m.idx, { lo: T.lo, inst: T.inst, ghost: T.ghost, verts: T.verts, normals: T.normals, tris: T.tris, fmem: T.fmem, vmem: T.vmem });
-      while (cache.size > CACHE_MAX) cache.delete(cache.keys().next().value!);
-      const inst = T.inst.slice();
-      const ib = T.tris.slice();
-      (self as any).postMessage({ cmd: 'loaded', idx: m.idx, inst, free: T.free, vb, ib, lo: T.lo },
-        [inst.buffer, T.free.buffer, vb.buffer, ib.buffer]);
+      const C = clipTile(T, m.clip ?? null);
+      const inst = C.inst, ib = C.ib, free = C.free;
+      (self as any).postMessage({ cmd: 'loaded', idx: m.idx, inst, free, vb, ib, lo: T.lo, clip: m.clip ?? null, nFull: T.inst.length / 4, fetched },
+        [inst.buffer, free.buffer, vb.buffer, ib.buffer]);
     } else if (m.cmd === 'detail') {
-      let D = cache.get(m.idx);
-      if (!D) {
-        const T = decodeTile(await getTileBytes(m));
-        D = { lo: T.lo, inst: T.inst, ghost: T.ghost, verts: T.verts, normals: T.normals, tris: T.tris, fmem: T.fmem, vmem: T.vmem };
-        cache.set(m.idx, D);
-      } else { cache.delete(m.idx); cache.set(m.idx, D); }
+      const D = await getDecoded(m);
       const t0 = performance.now();
       const out = genDetail(m.idx, D, m.range, m.want);
       (self as any).postMessage({ cmd: 'detail', idx: m.idx, key: m.key, lipids: out.lipids, free: out.free, stats: out.stats, ms: performance.now() - t0 },

@@ -88,8 +88,9 @@ host must allow CORS and should support HTTP Range requests. Hugging Face `resol
 
 - **Whole cell** (`jenc_full.py`, about 16 GB). This is the default for the public site.
   - Viewer tiles of 200 nm are stored as gzip members of one shard per 1 µm block (`tiles/s_BX_BY_BZ.bin`). The
-    viewer reads them with Range requests, within a budget of about 8 M instances, centre of the view first,
-    evicting the least recently used tiles.
+    viewer reads them with Range requests, clipped to the cut slab, within a budget of 4, 8 or 16 M molecules
+    (Performance panel "Detail", or `?detail=low|medium|high`), centre of the view first, evicting the least
+    recently used tiles. A 60 nm section through the whole cell fits the 8 M budget.
   - Until a tile's molecules arrive, the cut face shows per-tile *overview stand-ins* (`overview/*.bin.gz`) and
     compartment colours.
 - **1.6 µm cube** (`jenc.py`, about 180 MB). One sub-volume with every compartment. It is used by the validation pages

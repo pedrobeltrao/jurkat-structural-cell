@@ -13,6 +13,12 @@ const n0 = (idx: TileIndex) => idx.n > 0;
 // exterior view (no cut): only the outer wall is visible above the backdrop drawn at the mannan/glucan boundary
 // (shaders.ts fsFill), so tiles reaching less than this deep below the cell surface are loaded
 const SHELL_DEPTH = 60;
+// whole-cell section: tiles are uploaded clipped to the slab +- a margin (worker.ts clipTile), so plane moves within the
+// margin need no reload; a tile is re-clipped when the slab leaves its range, once the plane has rested RECLIP_MS.
+// The margin is the largest of CLIP_MS whose estimated section total fits the budget (a 200 nm margin would triple
+// a 60 nm section).
+const CLIP_MS = [100, 60, 30, 15, 6], RECLIP_MS = 250;
+type Clip = { n: V3; lo: number; hi: number; d: number; slab: number } | null;
 
 export class PageAlloc {
   used: Uint8Array; n: number; count = 0; high = 0;
@@ -39,6 +45,7 @@ export interface LoadedTile {
   vb: GPUBuffer | null; ib: GPUBuffer | null; nIdx: number; lastUsed: number;
   det: null | { n: V3; a: number; b: number; shell: boolean }; detPending: boolean; underMesh: boolean;
   baseFreeMissing: boolean;
+  clip: Clip; reclip: boolean; nFull: number;          // range the upload was clipped to (null: whole tile)
 }
 
 export class TileManager {
@@ -51,7 +58,10 @@ export class TileManager {
   pageTile: Int32Array; pageLocal: Uint32Array;
   tileState = new Uint32Array(TGRID * TGRID * TGRID);
   desired: number[] = []; desiredSet = new Set<number>();
-  inflight = 0; maxInflight = 12; detInflight = 0; maxDetInflight = 3;
+  inflight = 0; maxInflight = 12;
+  clipNow: Clip = null; planeKey = ''; planeT = 0;     // whole-cell cut: current clip range, last plane change
+  secWant = 0; secHave = 0;                            // tiles meeting the section / of those with molecules loaded
+  detInflight = 0; maxDetInflight = 3;
   frameNo = 0;
   onChange: () => void = () => {};
   onTileLoaded: ((t: LoadedTile) => void)[] = [];
@@ -84,10 +94,11 @@ export class TileManager {
     for (let w = 0; w < nWorkers; w++) {
       const wk: Worker = new TileWorker();
       wk.onmessage = (e) => this.onMessage(e.data);
-      wk.postMessage({ cmd: 'init', base, G: geo.G, F: geo.F, embedded });
+      wk.postMessage({ cmd: 'init', base, G: geo.G, F: geo.F, embedded, rawBudgetMB: Math.round(rawBudgetMB() / nWorkers) });
       this.workers.push(wk);
     }
     if (this.whole && idx.overview) this.ov = new Overview(this, idx.overview);
+    if (this.whole) this.maxInflight = 16;
   }
 
   /** worker request fields for tile i: coordinates, plus the byte range in its block shard (whole-cell builds) */
@@ -99,7 +110,34 @@ export class TileManager {
       m.shard = { path: sh.path.replace('{bx}', String(f(m.ix / b))).replace('{by}', String(f(m.iy / b))).replace('{bz}', String(f(m.iz / b))),
         off: this.idx.off[i], n: this.idx.gz[i] };
     }
+    if (this.clipNow) m.clip = this.clipNow;
     return m;
+  }
+  /** worker of tile i: by block shard in whole-cell builds (one worker resolves and caches each shard), else by tile */
+  workerFor(i: number): Worker {
+    const sh = this.idx.shard, W = this.workers.length;
+    if (!sh) return this.workers[i % W];
+    const b = sh.block_tiles, f = Math.floor;
+    const h = Math.imul(f(this.idx.ix[i] / b) + 64, 73856093) ^ Math.imul(f(this.idx.iy[i] / b) + 64, 19349663) ^ Math.imul(f(this.idx.iz[i] / b) + 64, 83492791);
+    return this.workers[(h >>> 0) % W];
+  }
+  /** the loaded upload of t holds everything the current view needs */
+  covered(t: LoadedTile) {
+    const c = this.clipNow;
+    if (!c) return t.clip === null;
+    if (!t.clip) return true;                           // whole tile (loaded without a cut): covers any slab
+    const n = t.clip.n, d = c.d, e = c.d + c.slab;
+    return n[0] * c.n[0] + n[1] * c.n[1] + n[2] * c.n[2] > 0.99995 && t.clip.lo <= d + 0.5 && t.clip.hi >= e - 0.5;
+  }
+  /** instances tile i will occupy: the loaded count when current, else the slab share of its full count */
+  cost(i: number, c: Clip = this.clipNow) {
+    const t = this.loaded.get(i);
+    if (t && this.covered(t)) return t.nInst;
+    const N = this.idx.nInst[i];
+    if (!c) return N;
+    const ctr = this.tileCenter(i), s = dot(c.n, ctr), h = 100 * (Math.abs(c.n[0]) + Math.abs(c.n[1]) + Math.abs(c.n[2]));
+    const ov = Math.min(c.hi + 10, s + h) - Math.max(c.lo - 10, s - h);
+    return Math.ceil(N * Math.max(0, Math.min(1, ov / (2 * h))));
   }
   /** set or clear bits of one tile's entry in the tile-state grid (and upload only that entry) */
   setTileBits(ix: number, iy: number, iz: number, set: number, clear: number) {
@@ -116,10 +154,14 @@ export class TileManager {
   // ---------------------------------------------------------------- desired set
   update(cam: Camera, aspect: number, cutOn: boolean, plane: number[], slab: number, organelle: boolean, heightPx: number) {
     this.frameNo++;
-    this.ov?.update(cam, aspect, cutOn, plane, slab, organelle);
-    if (organelle) { this.desired = []; this.desiredSet.clear(); return; }   // surfaces only: nothing to stream (loaded tiles stay cached)
+    if (organelle) { this.ov?.update(cam, aspect, cutOn, plane, slab, organelle, null); this.desired = []; this.desiredSet.clear(); return; }   // surfaces only: nothing to stream (loaded tiles stay cached)
     const eye = cam.eye, fr = cam.frustum(aspect), n = this.idx.n;
     const nn: V3 = [plane[0], plane[1], plane[2]];
+    const mkClip = (m: number): Clip => ({ n: nn, lo: plane[3] - m, hi: plane[3] + slab + m, d: plane[3], slab });
+    this.clipNow = this.whole && cutOn ? mkClip(CLIP_MS[0]) : null;
+    const pk = cutOn ? `${plane.join(',')},${slab}` : 'off', now = performance.now();
+    if (pk !== this.planeKey) { this.planeKey = pk; this.planeT = now; }
+    const settled = now - this.planeT > RECLIP_MS;
     const ext = 100 * (Math.abs(nn[0]) + Math.abs(nn[1]) + Math.abs(nn[2]));
     const cand: { i: number; d: number }[] = [];
     for (let i = 0; i < n; i++) {
@@ -150,22 +192,48 @@ export class TileManager {
     }
     cand.sort((a, b) => a.d - b.d);
     let budget = this.r.instPages * PAGE * 0.94, slots = this.r.maxSlots - 8;
+    if (this.clipNow) {                                 // widest margin whose section estimate fits (half a page waste per tile)
+      for (const m of CLIP_MS) {
+        const c = mkClip(m); let tot = 0;
+        for (const x of cand) tot += this.cost(x.i, c) + PAGE / 2;
+        this.clipNow = c;
+        if (tot <= 0.9 * budget) break;
+      }
+    }
     const des: number[] = [];
     for (const c of cand) {
-      const ni = this.idx.nInst[c.i];
+      const ni = this.cost(c.i);
       if (ni > budget || slots <= 0) { this.starved = true; break; }
       budget -= Math.ceil(ni / PAGE) * PAGE; slots--;
       des.push(c.i);
     }
     if (des.length === cand.length) this.starved = false;
     this.desired = des; this.desiredSet = new Set(des);
+    this.secWant = cand.length; this.secHave = 0;
+    // stand-ins are wanted only in blocks with section tiles whose molecules are not (yet) loaded
+    const needOv = new Set<string>(), bt = this.idx.shard ? this.idx.shard.block_tiles : 5, fl = Math.floor;
+    for (const c of cand) {
+      const t = this.loaded.get(c.i);
+      if (t && this.covered(t)) this.secHave++;
+      else if (this.ov) needOv.add(`${fl(this.idx.ix[c.i] / bt)}_${fl(this.idx.iy[c.i] / bt)}_${fl(this.idx.iz[c.i] / bt)}`);
+    }
+    this.ov?.update(cam, aspect, cutOn, plane, slab, organelle, needOv);
     for (const i of des) { const t = this.loaded.get(i); if (t) t.lastUsed = this.frameNo; }
-    // request loads
+    // request loads (nearest first): missing tiles, then (once the plane rests) tiles whose clip no longer covers the slab
     for (const i of des) {
       if (this.inflight >= this.maxInflight) break;
-      if (this.state[i] !== 0) continue;
-      this.state[i] = 1; this.inflight++;
-      this.workers[i % this.workers.length].postMessage({ cmd: 'load', ...this.tileMsg(i) });
+      if (this.state[i] === 0) {
+        this.state[i] = 1; this.inflight++;
+        this.workerFor(i).postMessage({ cmd: 'load', ...this.tileMsg(i) });
+      } else if (this.state[i] === 2) {
+        const t = this.loaded.get(i)!;
+        if (t.reclip || this.covered(t)) continue;
+        // while the plane moves (sweep, dragging) only uploads that no longer reach the slab at all are re-clipped
+        const c = this.clipNow;
+        if (!settled && !(c && t.clip && (t.clip.hi < c.d || t.clip.lo > c.d + c.slab))) continue;
+        t.reclip = true; this.inflight++;
+        this.workerFor(i).postMessage({ cmd: 'load', ...this.tileMsg(i) });
+      }
     }
     this.updateDetail(cam, cutOn, plane, slab, heightPx);
   }
@@ -248,7 +316,7 @@ export class TileManager {
       const key = cutOn ? `${plane[3] - m}|${plane[3] + need + m}` : 'shell';
       (t as any)._req = { n: nn, a: plane[3] - m, b: plane[3] + need + m, shell: !cutOn };
       const hasMem = this.idx.nTri[t.idx] > 0, hasWall = this.hasWall && (this.idx.volGlucan[t.idx] > 0 || (this.idx.labelMask[t.idx] & 2) !== 0);
-      this.workers[t.idx % this.workers.length].postMessage({
+      this.workerFor(t.idx).postMessage({
         cmd: 'detail', ...this.tileMsg(t.idx), key,
         range, want: { lipids: hasMem && cutOn, wall: hasWall },
       });
@@ -308,7 +376,11 @@ export class TileManager {
     if (m.cmd === 'error') {
       console.warn('worker error', m.req, m.idx, m.error);
       this.lastLoadErr = String(m.error).split('\n')[0];
-      if (m.req === 'load') { this.state[m.idx] = 0; this.inflight--; }
+      if (m.req === 'load') {
+        this.inflight--;
+        const t = this.loaded.get(m.idx);
+        if (t) t.reclip = false; else this.state[m.idx] = 0;        // a failed re-clip keeps the old upload
+      }
       if (m.req === 'detail') { this.detInflight--; const t = this.loaded.get(m.idx); if (t) t.detPending = false; }
       return;
     }
@@ -318,7 +390,12 @@ export class TileManager {
 
   onLoaded(m: any) {
     const i = m.idx as number;
-    if (!this.desiredSet.has(i)) { this.state[i] = 0; this.onChange(); return; }   // no longer needed
+    const old = this.loaded.get(i);
+    if (!this.desiredSet.has(i)) {                     // no longer needed
+      if (old) old.reclip = false; else this.state[i] = 0;
+      this.onChange(); return;
+    }
+    if (old) this.evict(old);                          // re-clipped upload replaces the old one
     const inst: Uint32Array = m.inst, nInst = inst.length / 4;
     const q = this.r.device.queue;
     if (!this.slots.length) this.evictOne(i);
@@ -352,11 +429,12 @@ export class TileManager {
       this.r.setMeshSlot(slot, false);
     }
     const t: LoadedTile = { idx: i, slot, lo, inst, nInst, pages, basePages, nBase: nFree, lipPages: [], detPages: [], nLip: 0, nDet: 0,
-      vb, ib, nIdx, lastUsed: this.frameNo, det: null, detPending: false, underMesh: false, baseFreeMissing };
+      vb, ib, nIdx, lastUsed: this.frameNo, det: null, detPending: false, underMesh: false, baseFreeMissing,
+      clip: m.clip ?? null, reclip: false, nFull: m.nFull ?? nInst };
     this.loaded.set(i, t); this.state[i] = 2;
     this.setTileBits(this.idx.ix[i], this.idx.iy[i], this.idx.iz[i], 1, 0);
     this.ov?.setHidden(i, true);
-    this.bytesLoaded += this.idx.gz[i]; this.tilesLoadedTotal++;
+    this.bytesLoaded += m.fetched ?? this.idx.gz[i]; this.tilesLoadedTotal++;
     this.syncHigh();
     for (const f of this.onTileLoaded.slice()) f(t);
     this.onChange();
@@ -447,10 +525,11 @@ export class TileManager {
     let inst = 0, lip = 0, free = 0, mesh = 0;
     for (const t of this.loaded.values()) { inst += t.nInst; lip += t.nLip; free += t.nBase + t.nDet; mesh += t.nIdx / 3; }
     return { tiles: this.loaded.size, inst, lip, free, mesh, inflight: this.inflight + this.detInflight, desired: this.desired.length,
-      ovBlocks: this.ov ? this.ov.loaded.size : 0, ovSpheres: this.ov ? this.ov.nResident() : 0 };
+      ovBlocks: this.ov ? this.ov.loaded.size : 0, ovSpheres: this.ov ? this.ov.nResident() : 0,
+      secWant: this.secWant, secHave: this.secHave, clipMargin: this.clipNow ? this.clipNow.d - this.clipNow.lo : null, instCap: Math.floor(this.r.instPages * PAGE * 0.94) };
   }
   pendingForView() {
-    let n = 0; for (const i of this.desired) if (this.state[i] !== 2) n++;
+    let n = 0; for (const i of this.desired) { if (this.state[i] !== 2) n++; else if (this.clipNow && !this.covered(this.loaded.get(i)!)) n++; }
     let d = 0; for (const t of this.loaded.values()) if (t.detPending) d++;
     return n + d;
   }
@@ -473,11 +552,16 @@ export class Overview {
     this.state = new Uint8Array(this.blocks.length);
     this.blocks.forEach((b, i) => this.blockOf.set(`${b[0]}_${b[1]}_${b[2]}`, i));
   }
-  nResident() { let n = 0; for (const B of this.loaded.values()) n += B.recs.length / 4; return n; }
+  /** stand-ins currently shown (their tile's molecules not loaded) */
+  nResident() {
+    let n = 0;
+    for (const B of this.loaded.values()) for (const [i, [, c]] of B.ranges) if (this.tm.state[i] !== 2) n += c;
+    return n;
+  }
 
-  update(cam: Camera, aspect: number, cutOn: boolean, plane: number[], slab: number, organelle: boolean) {
+  update(cam: Camera, aspect: number, cutOn: boolean, plane: number[], slab: number, organelle: boolean, need: Set<string> | null) {
     this.frame++;
-    if (!this.enabled || !cutOn || organelle) {
+    if (!this.enabled || !cutOn || organelle || !need) {
       this.desired.clear();
       for (const B of [...this.loaded.values()]) this.evict(B);
       return;
@@ -489,6 +573,7 @@ export class Overview {
       const c: V3 = [(B[0] + 0.5) * this.blockNm, (B[1] + 0.5) * this.blockNm, (B[2] + 0.5) * this.blockNm];
       const s = dot(nn, c) - plane[3];
       if (s + ext < 0 || s - ext > slab) return;
+      if (!need.has(`${B[0]}_${B[1]}_${B[2]}`)) return;     // every section tile of the block has its molecules
       const rel = sub(c, eye);
       for (let k = 0; k < 5; k++) if (fr[4 * k] * rel[0] + fr[4 * k + 1] * rel[1] + fr[4 * k + 2] * rel[2] + fr[4 * k + 3] < -rs) return;
       cand.push({ b, d: len(sub(c, cam.target)) });
@@ -502,6 +587,7 @@ export class Overview {
       budget -= np; this.desired.add(c.b);
       const L = this.loaded.get(c.b); if (L) L.lastUsed = this.frame;
     }
+    for (const L of [...this.loaded.values()]) if (!this.desired.has(L.b)) this.evict(L);
     for (const c of cand) {
       if (this.inflight >= this.maxInflight) break;
       if (!this.desired.has(c.b) || this.state[c.b] !== 0) continue;
@@ -582,4 +668,10 @@ export class Overview {
     tm.setTileBits(tm.idx.ix[i], tm.idx.iy[i], tm.idx.iz[i], hidden ? 0 : 2, hidden ? 2 : 0);
     tm.onChange();
   }
+}
+
+/** budget of the worker's compressed-tile cache (MB): about 1/16 of device memory, 200-500 MB */
+function rawBudgetMB() {
+  const gb = (navigator as any).deviceMemory as number | undefined;      // Chrome: rounded, at most 8
+  return Math.max(200, Math.min(500, Math.round((gb ?? 8) * 64)));
 }

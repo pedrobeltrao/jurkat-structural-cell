@@ -57,6 +57,14 @@ let tour: { i: number; phase: 'fly' | 'wait' | 'hold'; t: number } | null = null
 let sweep: { t0: number; d0: number; d1: number; dur: number } | null = null;
 const frameTimes: number[] = [];
 
+/** molecule budget: ?detail=low|medium|high|auto, else the saved choice (Performance panel), else auto */
+function detailPref(): string {
+  const ok = ['auto', 'low', 'medium', 'high'];
+  const q = new URLSearchParams(location.search).get('detail');
+  if (q && ok.includes(q)) return q;
+  try { const v = localStorage.getItem('yc.detail'); if (v && ok.includes(v)) return v; } catch { /* storage unavailable */ }
+  return 'auto';
+}
 function setLoading(msg: string, f: number) {
   ($('loading').querySelector('.m') as HTMLElement).textContent = msg;
   ($('loading').querySelector('.pb div') as HTMLElement).style.width = `${Math.round(f * 100)}%`;
@@ -95,6 +103,7 @@ async function boot() {
     typesTiles = { off: new Uint32Array(tt, 0, NT + 1), tiles: idx.typesTilesU32 ? new Uint32Array(tt, (NT + 1) * 4) : new Uint16Array(tt, (NT + 1) * 4) };
     setLoading('Starting WebGPU', 0.7);
     R = new Renderer(canvas);
+    R.detail = detailPref();
     R.onLost = (m) => { toast(m, 10000); };
     await R.init(lib, geo);
     typeFlags = new Uint32Array(NT);
@@ -481,9 +490,30 @@ function renderLegend() {
 }
 
 // ---------------------------------------------------------------- UI construction
+/** box holding the model: the whole cell's bounding box (cell distance field) or the sub-volume cube */
+function modelBox(): { lo: V3; hi: V3 } {
+  const h = geo?.fields?.head?.[0];
+  if (geo?.whole_cell && h) {
+    const lo: V3 = [h[0], h[1], h[2]], e = h[3] * h[7];
+    return { lo, hi: [lo[0] + h[4] * e, lo[1] + h[5] * e, lo[2] + h[6] * e] };
+  }
+  const a = geo?.half ?? 2200;
+  return { lo: [-a, -a, -a], hi: [a, a, a] };
+}
+/** range of the plane offset d = n . p over the model box (+ 100 nm) for normal n: the Position slider and the sweep */
+function planeRange(n: V3): [number, number] {
+  const B = modelBox(); let lo = Infinity, hi = -Infinity;
+  for (let k = 0; k < 8; k++) {
+    const p: V3 = [k & 1 ? B.hi[0] : B.lo[0], k & 2 ? B.hi[1] : B.lo[1], k & 4 ? B.hi[2] : B.lo[2]];
+    const v = dot(n, p); lo = Math.min(lo, v); hi = Math.max(hi, v);
+  }
+  return [Math.floor(lo - 100), Math.ceil(hi + 100)];
+}
 function syncPlaneUI() {
   const d = fs.plane[3];
-  ($('planeD') as HTMLInputElement).value = String(Math.round(d));
+  const [rlo, rhi] = planeRange(planeN()), pd = $('planeD') as HTMLInputElement;
+  pd.min = String(rlo); pd.max = String(rhi);           // the slider follows the plane normal (axis buttons, Align to view)
+  pd.value = String(Math.round(d));
   $('planeDv').textContent = `${Number(d.toFixed(nudgeStep < 0.5 ? 2 : 1))} nm`;
   const s = fs.slab;
   ($('slab') as HTMLInputElement).value = String(Math.round(Math.log(s / 5) / Math.log(4400 / 5) * 1000));
@@ -565,9 +595,9 @@ function buildUI() {
   $('sweepBtn').onclick = () => {
     if (sweep) { sweep = null; $('sweepBtn').classList.remove('on'); return; }
     const n = planeN(); fs.cutOn = true; ($('cutOn') as HTMLInputElement).checked = true;
-    const R0 = geo.G[0];
-    sweep = { t0: performance.now(), d0: -R0, d1: R0, dur: 30000 };
-    cam.target = add(cam.target, scale(n, -R0 - fs.plane[3]));
+    const [d0, d1] = planeRange(n);
+    sweep = { t0: performance.now(), d0, d1, dur: Math.max(30000, (d1 - d0) / 4400 * 30000 / 2) };
+    cam.target = add(cam.target, scale(n, d0 - fs.plane[3]));
     $('sweepBtn').classList.add('on');
   };
   $('flipBtn').onclick = () => { const n = planeN(); const st = cam.state(); const tgt = cam.target; const nn = scale(n, -1) as V3; setPlane(nn, -fs.plane[3]);
@@ -639,6 +669,12 @@ function buildUI() {
     rl.appendChild(l);
   });
   $<HTMLSelectElement>('quality').onchange = (e) => setQuality((e.target as HTMLSelectElement).value);
+  const dsel = $<HTMLSelectElement>('detailBudget');
+  dsel.value = R.detail; dsel.title = `Molecules kept on the GPU at once (now ${R.detailUsed}). Changing it reloads the page.`;
+  dsel.onchange = () => {
+    try { localStorage.setItem('yc.detail', dsel.value); } catch { /* storage unavailable */ }
+    const u = new URL(location.href); u.searchParams.delete('detail'); location.href = u.href;
+  };
   $<HTMLInputElement>('detailOn').onchange = (e) => {
     T.detailEnabled = (e.target as HTMLInputElement).checked;
     if (!T.detailEnabled) for (const t of T.loaded.values()) if (t.det) T.dropDetail(t);
@@ -653,7 +689,8 @@ function buildUI() {
     $('sweepBtn').textContent = 'Sweep through cell'; document.title = 'Jurkat Cell Model: whole cell';
     document.querySelectorAll('.cubeSize').forEach(e => (e.textContent = 'whole cell'));
     document.querySelectorAll('.subvolWord').forEach(e => (e.textContent = ''));
-    $('zoomHelp').textContent = 'Zoom (from the whole cell, about 15 µm, down to single residues; molecules stream in around the view centre)';
+    const B = modelBox(), L = Math.max(B.hi[0] - B.lo[0], B.hi[1] - B.lo[1], B.hi[2] - B.lo[2]) / 1000;
+    $('zoomHelp').textContent = `Zoom (from the whole cell, about ${L.toFixed(0)} µm across, down to single residues; molecules stream in around the view centre)`;
   }
   $('modelBtn').onclick = () => {
     // the dynamics section describes the offline tracer example: only for builds that ship it
@@ -827,7 +864,8 @@ function updateMinimap(now: number) {
     let u = sub(cam.right, scale(n, dot(cam.right, n)));
     if (len(u) < 1e-3) u = norm(cross(n, [0, 0, 1])); u = norm(u);
     let v = cross(n, u); if (dot(v, cam.up) < 0) v = scale(v, -1) as V3;
-    const ext = geo.half ? geo.half * 1.25 : 2300, c0 = scale(n, d) as V3;    // Jurkat: the sub-volume (fields exist only there)
+    // Jurkat: the sub-volume (fields exist only there), or the whole cell's bounding box
+    const MB = modelBox(), ext = geo.whole_cell ? 1.05 * Math.max(...MB.lo.map(Math.abs), ...MB.hi.map(Math.abs)) : geo.half ? geo.half * 1.25 : 2300, c0 = scale(n, d) as V3;
     mmBasis = { u, v, c: c0, ext };
     const N = 120, img = g.createImageData(N, N);
     // per label (LABEL_NAMES): exterior, cytosol, perinuclear, nucleoplasm, nucleolus, IMS, matrix, ER, Golgi, endo, pore
@@ -881,7 +919,7 @@ function updateHUD() {
   const tt = T.totals(), s = R.stats;
   const fps = frameTimes.length > 3 ? 1000 / (frameTimes.reduce((a, b) => a + b) / frameTimes.length) : 0;
   const pend = T.pendingForView();
-  $('hud').innerHTML = `<b>${fmt(tt.inst)}</b> molecules in ${tt.tiles} tiles${pend ? ` · <span style="color:#FF9400">streaming ${pend}</span>` : ''}${T.starved ? ' · <span style="color:#FF9400">memory budget reached (thinner slab loads more)</span>' : ''}${tt.ovBlocks ? ` · ${fmt(tt.ovSpheres)} stand-ins in ${tt.ovBlocks} blocks` : ''}<br>
+  $('hud').innerHTML = `<b>${fmt(tt.inst)}</b> molecules in ${tt.tiles} tiles${pend ? ` · <span style="color:#FF9400">streaming ${pend}</span>` : ''}${T.starved ? ` · <span style="color:#FF9400">budget of ${fmt(tt.instCap)} molecules reached (thinner slab or higher Detail loads more)</span>` : ''}${T.whole && fs.cutOn && tt.secWant ? ` · section ${Math.round(100 * tt.secHave / tt.secWant)}% of ${tt.secWant} tiles` : ''}${tt.ovSpheres ? ` · ${fmt(tt.ovSpheres)} stand-ins` : ''}<br>
     drawn: <b>${fmt(s.ninst)}</b> in view · ${fmt(s.l0 * 64)} residue beads (≤) · ${fmt(s.l1 * 16)} LOD1 · ${fmt(s.l2)} LOD2 · ${fmt(s.lip)} lipids · ${fmt(s.fre)} polymer beads<br>
     ${fps ? `${fps.toFixed(0)} fps · ` : ''}LOD bead ≥ ${fs.l0px.toFixed(1)} px · GPU pools ${R.gpuMemoryMB().toFixed(0)} MB · ${(T.bytesLoaded / 1048576).toFixed(0)} MB streamed${R.adapterInfo ? ' · ' + R.adapterInfo : ''}`;
   // scale bar

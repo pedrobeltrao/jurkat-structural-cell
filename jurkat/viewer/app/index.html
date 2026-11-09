@@ -137,7 +137,7 @@ kbd { background: rgba(255,255,255,0.12); border: 1px solid var(--line); border-
       <button id="alignView" class="small" title="Set the plane perpendicular to the current view, through the view centre">Align to view</button>
       <button id="followView" class="small" title="Plane follows the camera while you orbit">Follow camera</button>
     </div>
-    <div class="row"><label>Position</label><input type="range" id="planeD" min="-2200" max="2200" step="1"><span class="val" id="planeDv"></span></div>
+    <div class="row"><label>Position</label><input type="range" id="planeD" min="-12000" max="12000" step="1"><span class="val" id="planeDv"></span></div>
     <div class="row"><label>Fine step</label>
       <button id="nudgeBack" class="small nudge" title="Move the plane back one step (hold to repeat)">−</button>
       <select id="nudgeStep" title="Step for these buttons, Alt+wheel and Alt+, / Alt+.">
@@ -182,6 +182,9 @@ kbd { background: rgba(255,255,255,0.12); border: 1px solid var(--line); border-
     <div class="row"><label>Quality</label><select id="quality">
       <option value="auto">Auto (adapts to frame rate)</option><option value="low">Low</option><option value="med">Medium</option><option value="high">High</option><option value="ultra">Ultra</option>
     </select></div>
+    <div class="row"><label>Detail</label><select id="detailBudget">
+      <option value="auto">Auto</option><option value="low">Low (4 M molecules)</option><option value="medium">Medium (8 M)</option><option value="high">High (16 M)</option>
+    </select></div>
     <label class="chk"><input type="checkbox" id="detailOn" checked> Procedural lipids near camera</label>
   </section>
 
@@ -210,7 +213,7 @@ kbd { background: rgba(255,255,255,0.12); border: 1px solid var(--line); border-
   <div class="keys">
     <div><kbd>Left drag</kbd></div><div>Orbit around the view centre</div>
     <div><kbd>Right drag</kbd> / <kbd>Shift</kbd>+drag</div><div>Pan</div>
-    <div><kbd>Wheel</kbd></div><div id="zoomHelp">Zoom (from the whole cell, about 15 µm, to the <span class="cubeSize">1.6 µm</span> sub-volume and down to single residues)</div>
+    <div><kbd>Wheel</kbd></div><div id="zoomHelp">Zoom (from the whole cell, about 16 µm across, to the <span class="cubeSize">1.6 µm</span> sub-volume and down to single residues)</div>
     <div><kbd>Cmd</kbd>+<kbd>Wheel</kbd></div><div>Slow zoom</div>
     <div><kbd>Shift</kbd>+<kbd>Wheel</kbd></div><div>Move the cut plane through the cell</div>
     <div><kbd>Alt</kbd>/<kbd>Option</kbd>+<kbd>Wheel</kbd></div><div>Move the cut plane in fine steps (one Fine step per notch, 0.5 nm by default)</div>

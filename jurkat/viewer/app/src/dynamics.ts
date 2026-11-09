@@ -1,6 +1,6 @@
 // Tracer dynamics overlay: Brownian-dynamics trajectories of inert probes in a frozen crowd box (jurkat/validate/dynamics.py).
 // data/dynamics.json is fetched on first use only; each tracer file is uint16 (frames, n, 3), position = box_lo + q / quant * box_nm.
-import { fetchJson, fetchBin } from './data';
+import { fetchJson, fetchBin, isAbsent } from './data';
 import { Renderer, ID_FREE } from './renderer';
 import { V3 } from './math';
 
@@ -27,7 +27,7 @@ export class Dynamics {
   constructor(public R: Renderer, public onChange: () => void, public toast: (m: string) => void) {}
 
   load() {
-    return (this.loading ??= fetchJson('dynamics.json').then((j: DynData) => (this.data = j?.sets?.length ? j : null)).catch(() => null));
+    return (this.loading ??= isAbsent('dynamics.json').then(a => (a ? null : fetchJson('dynamics.json'))).then((j: DynData) => (this.data = j?.sets?.length ? j : null)).catch(() => null));
   }
   get cur() { return this.data!.sets[this.set]; }
   nFrames(S = this.cur) { return Math.min(...S.tracers.map(t => (t.q ? Math.floor(t.q.length / (3 * t.n)) : t.frames))); }
