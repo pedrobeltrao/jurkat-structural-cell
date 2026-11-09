@@ -5,12 +5,10 @@ A molecule-by-molecule structural model of a whole human Jurkat T cell (cell 1 o
 and cytoskeleton units), each drawn from an experimental (PDB) or predicted (AlphaFold DB) structure. A WebGPU viewer streams the model into the browser at residue resolution.
 
 - **Viewer:** https://pedrobeltrao.github.io/jurkat-structural-cell/ (GitHub Pages, built from `jurkat/viewer/app`).
-- **Data:** https://huggingface.co/datasets/pedrobeltrao/jurkat-structural-cell-data (viewer files: 16.4 GB in
-  2,366 files, none larger than 32 MB).
-- **Status:** work in progress. The current data are **pack v3**, a placeholder until pack v4 (procedural cristae,
-  inventory v4) is finished. See "Known limitations".
-
-> The site and dataset links work once the repository and the dataset have been published.
+- **Data:** https://huggingface.co/datasets/pedrobeltrao/jurkat-structural-cell-data. The site reads `web_full_v4/` (16.7 GB in
+  2,365 files, none larger than 34 MB); the earlier v3 pack stays in `web_full_v3/` (open it with `?data=`).
+- **Status:** work in progress. The current data are **pack v4**: procedural cristae, inventory v4, no interaction-driven
+  attraction. See "Known limitations".
 
 ## What the model is
 
@@ -66,7 +64,7 @@ cd jurkat/viewer
 Then point the viewer at a data folder in one of these ways:
 
 1. **Local data.** Put or symlink the viewer data at `web/data/` (for example a download of the Hugging Face dataset
-   folder `web_full_v3/`), then run:
+   folder `web_full_v4/`; the older v3 pack stays in `web_full_v3/`), then run:
    ```sh
    python serve.py web --port 8000           # static server with HTTP Range + CORS
    ```
@@ -74,10 +72,10 @@ Then point the viewer at a data folder in one of these ways:
    downloads whole block shards instead of single tiles.
 2. **Hosted data, no rebuild.** Add a `config.json` next to `index.html`:
    ```json
-   {"data_base": "https://huggingface.co/datasets/pedrobeltrao/jurkat-structural-cell-data/resolve/main/web_full_v3/"}
+   {"data_base": "https://huggingface.co/datasets/pedrobeltrao/jurkat-structural-cell-data/resolve/main/web_full_v4/"}
    ```
 3. **Per visit.** Use the URL parameter `?data=<url>`, which overrides `config.json`. For example:
-   `http://localhost:8000/?data=https://huggingface.co/datasets/pedrobeltrao/jurkat-structural-cell-data/resolve/main/web_full_v3/`
+   `http://localhost:8000/?data=https://huggingface.co/datasets/pedrobeltrao/jurkat-structural-cell-data/resolve/main/web_full_v4/`
 
 The order is `?data=`, then `config.json`, then the default `data/`. Relative URLs resolve against the page. The data
 host must allow CORS and should support HTTP Range requests. Hugging Face `resolve/main/` URLs support both.
@@ -136,21 +134,25 @@ in `MODEL.md`. The order is:
 Please cite the original data sources when you use the model. The derived viewer data on Hugging Face inherit the
 attribution requirements of the CC BY sources above.
 
-## Known limitations (pack v3 placeholder)
+## Known limitations (pack v4)
 
-- **No cristae.** v3 predates the procedural cristae (v4): the inner membrane is the boundary membrane only.
-- **Pre-pass files.** The pre-pass and mRNA files used for v3 are the current ones. Their counts match the v3 index
-  exactly (75,880,172 pre-pass instances including the 1,000 NPCs; 90,398,423 mRNA beads indexed).
-- **Placement shortfalls.** About 97.7% of the target mass was placed. The shortfalls are in the ER lumen (78%), the
-  mitochondrial inner membrane (78%) and the NE (84%).
-- **NPC mass.** The NPC ingredient counts one copy of each Nup; this is fixed in inventory v4.
+- **Placement shortfalls.** 95.9% of the target mass was placed. Thin compartments jam with the current random
+  sequential packer: mitochondrial matrix 69.5% (between cristae), ER lumen 65.4%, NE 88%, endo-lysosomal membranes
+  87%. Cytosol, nucleoplasm, PM, ER membrane and inner mitochondrial membrane are at 98–99.7%.
+- **Truncated cell.** The EM volume cuts cell 1 at one face (about 3–4% of the cell missing). The model currently
+  puts a plasma membrane on that face; the next geometry revision makes it an open boundary ("edge of EM data").
+- **Cristae** are procedural (lamellae perpendicular to each mitochondrion's long axis, 70–100 nm apart), not
+  segmented. The viewer's cut-face colouring does not yet know them (crista lumens are coloured as matrix).
+- **No interaction-driven organisation.** Placement is random within compartments and membranes, so the model can be
+  compared with proximity data without circularity. Pre-built heterodimers (AFDB models selected by SEC co-elution
+  or STRING) are placed as complexes.
 - **Viewer.** The whole-cell distance fields for the cut-face colours are resampled at 48 nm (32 nm for ER, Golgi and
   endo-lysosomes), which agrees with the 16 nm geometry at 98.4% of points inside the cell. The per-tile membrane
   meshes are 8 nm.
 - **GPU memory.** The whole-cell build needs a WebGPU storage-buffer binding of about 175 MB (library 158 MB, fields
   173 MB). Desktop GPUs expose ≥ 1 GB; devices at the WebGPU minimum (128 MiB) get an error message.
-- **Not yet tested in a browser.** The data path has been tested headless, but the rendering of the whole-cell mode
-  has not been seen on a GPU.
+- **Browser support.** Needs WebGPU (recent Chrome or Edge on desktop). Tested on an Intel integrated GPU (Iris Xe,
+  "Detail: medium"); other GPUs and Safari/Firefox are untested.
 
 ## Licence
 
