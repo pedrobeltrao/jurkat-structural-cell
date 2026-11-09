@@ -153,4 +153,4 @@ attribution requirements of the CC BY sources above.
 
 ## Licence
 
-To be decided (see `LICENSE`).
+[CC BY-NC 4.0](https://creativecommons.org/licenses/by-nc/4.0/) for the code, documentation and model data (see `LICENSE`). Non-commercial reuse with attribution; please cite this repository. Third-party sources keep their own terms (table above).
