@@ -2,7 +2,7 @@ import { Renderer, FrameState, ID_INST, ID_LIPID, ID_FREE } from './renderer';
 import { Camera, CamState } from './camera';
 import { TileManager, LoadedTile } from './tiles';
 import { Geometry, prepareGeometry } from './geometry';
-import { loadLibrary, loadTileIndex, fetchJson, fetchBin, Library, TileIndex, REGION_NAMES, MEM_NAMES, LABEL_NAMES, PAL, specialFor, idMatches, b64ToBytes, moduleColor, MEM_REGIONS, SOLUBLE_REGIONS } from './data';
+import { loadLibrary, loadTileIndex, fetchJson, fetchBin, Library, TileIndex, REGION_NAMES, MEM_NAMES, LABEL_NAMES, PAL, specialFor, idMatches, b64ToBytes, moduleColor, MEM_REGIONS, SOLUBLE_REGIONS, SHELL_REGIONS, L_OUTV } from './data';
 import { loadFields } from './fields';
 import { V3, dot, norm, cross, sub, add, scale, len } from './math';
 import { ABOUT_HTML, ABOUT_HTML_WHOLE } from './about';
@@ -26,7 +26,7 @@ const cam = new Camera();
 const canvas = $<HTMLCanvasElement>('gpu');
 
 const fs: FrameState = {
-  cutOn: true, plane: [0, 0, 1, 0], slab: 60, colorMode: 0, regionMask: 0xFFFFFF, freeHide: 0, highlight: false,
+  cutOn: true, plane: [0, 0, 1, 0], slab: 60, colorMode: 0, regionMask: 0xFFFFFFFF, freeHide: 0, highlight: false,
   selId: 0, shaded: true, organelle: false, motion: 0, l0px: 1.6, l1px: 2.5, minpx: 0.3, outline: 1, showMeshes: true, showLipids: true, renderScale: 1, memColors: false,
 };
 let planeFollow = false;
@@ -333,6 +333,7 @@ function describe(id: number): any {
     return { kind: 'free', id, fk: kind, chain, title: nm, sub };
   }
   if (id >= 0x200 && id < 0x210) return { kind: 'band', id, title: 'Membrane (cut face)', sub: MEM_NAMES[id - 0x200] };
+  if (id === 0x100 + L_OUTV) return { kind: 'label', id, title: 'Edge of the EM data', sub: 'the imaged FIB-SEM volume ends here and truncates the cell (about 3-4% of it was not imaged); this flat face is not a cell surface and has no membrane' };
   if (id >= 0x100 && id < 0x110) return { kind: 'label', id, title: LABEL_NAMES[id - 0x100], sub: 'compartment (not loaded at this distance, or beyond the slab)' };
   return { kind: 'none', title: '' };
 }
@@ -473,7 +474,12 @@ function renderLegend() {
   if (m === 0) el.innerHTML = [sw(PAL[0], 'cytosolic protein'), sw(PAL[1], 'nuclear protein'), sw('#EE9BC0', 'ribosome protein'), sw('#C9558F', 'rRNA'),
     sw('#A98BCB', 'histone'), sw('#7A4FA0', 'DNA'), sw('#8E6CB0', 'linker histone H1'), sw(PAL[17], 'nuclear pore'), sw('#E0893A', 'actin filament'), sw('#74C476', 'microtubule'),
     sw(PAL[7], 'PM protein'), sw(PAL[8], 'NE protein'), sw(PAL[9], 'ER membrane protein'), sw(PAL[10], 'mito membrane protein'),
-    sw(PAL[2], 'mito matrix'), sw(PAL[3], 'ER lumen'), sw(PAL[4], 'Golgi'), sw(PAL[5], 'endo-lysosomal'), sw('#F3C643', 'lipid head'), sw('#F8E3A0', 'lipid tail')].join('');
+    sw(PAL[2], 'mito matrix'), sw(PAL[3], 'ER lumen'), sw(PAL[4], 'Golgi'), sw(PAL[5], 'endo-lysosomal'),
+    ...(hasRegion(18) ? [sw(PAL[18], 'nucleolar protein')] : []), ...(hasRegion(21) ? [sw(PAL[21], 'cortex protein')] : []),
+    ...(hasRegion(22) ? [sw(PAL[22], 'nuclear lamina')] : []), ...(hasRegion(19) ? [sw(PAL[19], 'lipid-anchored (PM, inner)')] : []),
+    ...(hasRegion(20) ? [sw(PAL[20], 'lipid/GPI-anchored (PM, outer)')] : []),
+    sw('#F3C643', 'lipid head'), sw('#F8E3A0', 'lipid tail'),
+    ...(geo?.face?.on ? [sw(PAL[92], 'flat face: edge of the EM data')] : [])].join('');
   else if (m === 1) el.innerHTML = sw('#4C8CD9', 'experimental (PDB)') + sw('#F5A84C', 'AlphaFold model');
   else if (m === 2) el.innerHTML = sw('#0053D6', 'pLDDT > 90') + sw('#65CBF3', '70–90') + sw('#FFDB13', '50–70') + sw('#B8B8B8', 'experimental (PDB)');
   else if (m === 3) el.innerHTML = `<div style="grid-column: 1 / 3"><div style="height:8px;border-radius:3px;background:linear-gradient(90deg,#440154,#3b528b,#21918c,#5ec962,#fde725)"></div><div style="display:flex;justify-content:space-between"><span>1</span><span>10³</span><span>10⁶ copies</span></div></div>`;
@@ -485,7 +491,7 @@ function renderLegend() {
       : '<div style="grid-column: 1 / 3">No interaction modules in this build</div>';
     el.querySelectorAll<HTMLElement>('.modsw').forEach(d => d.onclick = () => { const i = Number(d.dataset.m); setModule(selModule === i ? -1 : i); });
   }
-  else if (m === 5) el.innerHTML = REGION_NAMES.map((n, i) => sw(PAL[i], n)).join('');
+  else if (m === 5) el.innerHTML = REGION_NAMES.map((n, i) => hasRegion(i) ? sw(PAL[i], n) : '').join('');
   else el.innerHTML = '';
 }
 
@@ -632,6 +638,7 @@ function buildUI() {
     ['Membranes', '#F8E3A0', (on: boolean) => { fs.showMeshes = on; dirty = true; }],
     ['Soluble proteins', PAL[0], (on: boolean) => setRegions(SOLUBLE_REGIONS, on)],
     ['Membrane proteins', PAL[7], (on: boolean) => setRegions(MEM_REGIONS, on)],
+    SHELL_REGIONS.some(hasRegion) && ['Anchored, cortex, lamina', PAL[19], (on: boolean) => setRegions(SHELL_REGIONS, on)],
   ] as any[]).filter(Boolean);
   const boxes: HTMLInputElement[] = [];
   const allRegions = REGION_NAMES.map((_, i) => i);
@@ -663,6 +670,7 @@ function buildUI() {
   $('hideAll').onclick = () => setAll(() => false);
   const rl = $('regionList');
   REGION_NAMES.forEach((n, i) => {
+    if (!hasRegion(i)) return;                                   // regions this build does not use (e.g. v5 ones in v4 data)
     const l = document.createElement('label'); l.className = 'chk';
     l.innerHTML = `<input type="checkbox" checked data-r="${i}"><span class="sw" style="background:${PAL[i]}"></span>${n}`;
     (l.querySelector('input') as HTMLInputElement).onchange = (e) => setRegions([i], (e.target as HTMLInputElement).checked);
@@ -719,6 +727,12 @@ function setTypeHidden(ids: string[], hidden: boolean) {
   R.device.queue.writeBuffer(R.typeFlags, 0, typeFlags); dirty = true;
 }
 function setFree(kind: number, on: boolean) { if (on) fs.freeHide &= ~(1 << kind); else fs.freeHide |= 1 << kind; dirty = true; }
+/** true if any library type has copies in region i (types.json 'regions'); regions 0-17 always count (v4 lists) */
+function hasRegion(i: number): boolean {
+  if (i < 18) return true;
+  const c = (hasRegion as any).cache ?? ((hasRegion as any).cache = new Set<number>(lib.types.flatMap(t => Object.keys(t.regions ?? {}).map(Number))));
+  return c.has(i);
+}
 function setRegions(rs: number[], on: boolean) {
   for (const r of rs) { if (on) fs.regionMask |= 1 << r; else fs.regionMask &= ~(1 << r); }
   fs.regionMask >>>= 0;
@@ -868,8 +882,9 @@ function updateMinimap(now: number) {
     const MB = modelBox(), ext = geo.whole_cell ? 1.05 * Math.max(...MB.lo.map(Math.abs), ...MB.hi.map(Math.abs)) : geo.half ? geo.half * 1.25 : 2300, c0 = scale(n, d) as V3;
     mmBasis = { u, v, c: c0, ext };
     const N = 120, img = g.createImageData(N, N);
-    // per label (LABEL_NAMES): exterior, cytosol, perinuclear, nucleoplasm, nucleolus, IMS, matrix, ER, Golgi, endo, pore
-    const cols = [PAL[80], '#C4D6EB', PAL[6], PAL[1], '#A27DB8', '#E8B48F', PAL[2], PAL[3], PAL[4], PAL[5], '#C9C2DC']
+    // per label (LABEL_NAMES): exterior, cytosol, perinuclear, nucleoplasm, nucleolus, IMS, matrix, ER, Golgi, endo, pore,
+    // outside the EM volume (transparent, as the exterior)
+    const cols = [PAL[80], '#C4D6EB', PAL[6], PAL[1], PAL[18], '#E8B48F', PAL[2], PAL[3], PAL[4], PAL[5], '#C9C2DC', PAL[80]]
       .map(h => { const x = parseInt(h.slice(1), 16); return [(x >> 16) & 255, (x >> 8) & 255, x & 255]; });
     for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) {
       const x = ((i + 0.5) / N * 2 - 1) * ext, y = (1 - (j + 0.5) / N * 2) * ext;
@@ -877,7 +892,7 @@ function updateMinimap(now: number) {
       const lab = geom.label(p[0], p[1], p[2]);
       const inCube = !geo.half || (Math.abs(p[0]) <= geo.half && Math.abs(p[1]) <= geo.half && Math.abs(p[2]) <= geo.half);
       const col = cols[lab] ?? cols[0], o = 4 * (j * N + i);
-      img.data[o] = col[0]; img.data[o + 1] = col[1]; img.data[o + 2] = col[2]; img.data[o + 3] = lab === 0 ? 0 : inCube ? 255 : 110;
+      img.data[o] = col[0]; img.data[o + 1] = col[1]; img.data[o + 2] = col[2]; img.data[o + 3] = lab === 0 || lab === L_OUTV ? 0 : inCube ? 255 : 110;
     }
     mmImg.data = img;
   }

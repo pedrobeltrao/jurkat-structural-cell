@@ -673,6 +673,7 @@ fn fsMesh(in: VOut, @builtin(front_facing) ff: bool) -> FOut {
 export const FILL = COMMON + /* wgsl */ `
 @group(0) @binding(5) var<storage, read> palette: array<vec4f>;
 struct Prim { q0: vec4f, q1: vec4f, tc: vec4u };      // (yeast primitives; empty for Jurkat)
+// G0.w: open face on (model v5), G1.x: z of the open face, G1.y: offset of the cristae header in fields (0 = none)
 struct Geo { G0: vec4f, G1: vec4f, G2: vec4f, consts: vec4f, grid: vec4f,       // consts: PORE_R, PERI_W, IMS_W, nPores
              nax: vec4f, nr0: vec4f, nr1: vec4f, nr2: vec4f };
 @group(1) @binding(0) var<storage, read> prims: array<Prim>;
@@ -685,7 +686,7 @@ struct Geo { G0: vec4f, G1: vec4f, G2: vec4f, consts: vec4f, grid: vec4f,       
 
 // membranes (data.MEM_NAMES / jenc face_mem order): 0 PM, 1 NE, 2 ER, 3 MITO_OM, 4 MITO_IM, 5 GOLGI, 6 ENDO
 const NMEM: u32 = 7u;
-// fields: 0 cell, 1 ne_mid, 2 mito, 3 er, 4 golgi, 5 endo (all negative inside)
+// fields: 0 cell, 1 ne_mid, 2 mito, 3 er, 4 golgi, 5 endo, 6 nucleolus (v5) (all negative inside)
 struct Mem { d: array<f32, 7>, matrix: f32, hp: f32, cell: u32 };
 // distance field k (cell3d.field_sdf): trilinear inside a stored brick, +-clamp elsewhere
 fn fieldSdf(p: vec3f, k: u32) -> f32 {
@@ -709,6 +710,36 @@ fn fieldSdf(p: vec3f, k: u32) -> f32 {
 fn outerDepth(p: vec3f) -> f32 {
   if (fields[0] > 0.5) { return -fieldSdf(p, 0u); }
   return -1e9;
+}
+// height above the open face (model v5: the EM volume truncates the cell at z = G1.x); 1e9 without one
+fn faceDist(p: vec3f) -> f32 {
+  if (geo.G0.w > 0.5) { return p.z - geo.G1.x; }
+  return 1e9;
+}
+// depth inside the modelled domain (cell3d out[M_OUTER]): the plasma membrane or the open face, whichever is nearer
+fn domainDepth(p: vec3f) -> f32 { return min(outerDepth(p), faceDist(p)); }
+// cell3d.crista_lumen: signed distance to the intracristal lumen (negative inside); b = boundary matrix SDF.
+// header at o = G1.y (fields.ts CR_HDR): n, origin, h, dims, B, bricks, params/index/data offsets, CR_W, CR_GAP, CR_JW
+fn cristaLumen(p: vec3f, b: f32) -> f32 {
+  let o = u32(geo.G1.y);
+  let c = vec3i(floor((p - vec3f(fields[o + 1u], fields[o + 2u], fields[o + 3u])) / fields[o + 4u]));
+  let dims = vec3i(i32(fields[o + 5u]), i32(fields[o + 6u]), i32(fields[o + 7u]));
+  if (any(c < vec3i(0)) || any(c >= dims)) { return 1e9; }
+  let B = i32(fields[o + 8u]); let nb = vec3i(i32(fields[o + 9u]), i32(fields[o + 10u]), i32(fields[o + 11u]));
+  let bb = c / B; let l = c - bb * B;
+  let slot = i32(fields[u32(fields[o + 13u]) + u32((bb.x * nb.y + bb.y) * nb.z + bb.z)]);
+  if (slot < 0) { return 1e9; }
+  let k = i32(fields[u32(fields[o + 14u]) + u32(slot * B * B * B + (l.x * B + l.y) * B + l.z)]);
+  if (k < 0) { return 1e9; }
+  let q = u32(fields[o + 12u]) + 12u * u32(k);
+  if (fields[q + 11u] == 0.0) { return 1e9; }
+  let S = fields[q + 4u];
+  let t = dot(vec3f(fields[q], fields[q + 1u], fields[q + 2u]), p) - fields[q + 3u];
+  let uu = t - S * floor(t / S + 0.5);
+  let slab = abs(uu) - fields[o + 15u];
+  let lam = max(slab, b + fields[o + 16u]);
+  let w = abs(dot(vec3f(fields[q + 5u], fields[q + 6u], fields[q + 7u]), p - vec3f(fields[q + 8u], fields[q + 9u], fields[q + 10u]))) - fields[o + 17u];
+  return min(lam, max(slab, w));
 }
 // pore whose axis (through its centre along the NE normal) passes within rc of p: returns rho, or -1 (cell3d.in_pore)
 fn poreRho(p: vec3f, cell: u32, rc: f32) -> f32 {
@@ -747,20 +778,26 @@ fn memSdfs(p: vec3f) -> Mem {
   let om = fieldSdf(p, 2u);
   m.d[3] = om;                                  // mito outer membrane
   m.matrix = om + IMS;
+  if (geo.G1.y > 0.5 && m.matrix < fields[u32(geo.G1.y) + 15u]) {     // procedural cristae (model v4+)
+    m.matrix = max(m.matrix, -cristaLumen(p, m.matrix));
+  }
   m.d[4] = -m.matrix;                           // mito inner membrane
   m.d[2] = fieldSdf(p, 3u);                     // ER
   m.d[5] = fieldSdf(p, 4u);                     // Golgi
   m.d[6] = fieldSdf(p, 5u);                     // endo-lysosomal
   return m;
 }
-// labels (cell3d.label_from): 0 EXT, 1 CYTO, 2 PERI, 3 NUCP, 4 NUCL, 5 IMS, 6 MATRIX, 7 ERL, 8 GOLGI, 9 ENDO, 10 PORE
+// labels (cell3d.label_from): 0 EXT, 1 CYTO, 2 PERI, 3 NUCP, 4 NUCL, 5 IMS, 6 MATRIX, 7 ERL, 8 GOLGI, 9 ENDO, 10 PORE,
+// 11 OUTV (below the open face: outside the imaged EM volume)
 fn labelOf(p: vec3f, m: Mem) -> u32 {
   let PERI = geo.consts.y; let PORE_R = geo.consts.x;
+  if (faceDist(p) < 0.0) { return 11u; }
   if (m.d[0] < 0.0) { return 0u; }
   if (m.d[1] < 0.0) { return 2u; }
   let hp = m.hp;
   if (hp < -0.5 * PERI) {
     if (hp > -PERI - 8.0 && poreRho(p, m.cell, PORE_R + 0.5 * PERI) >= 0.0) { return 10u; }
+    if (fieldSdf(p, 6u) < 0.0) { return 4u; }   // nucleolus (1e9 when the build has no nucleolus field)
     return 3u;
   }
   if (hp < 0.0) { return 10u; }                 // pore channel between the midplane and the ONM
@@ -792,10 +829,15 @@ fn shadeLabel(p: vec3f, o: ptr<function, FOut>, bands: bool) {
   let lab = labelOf(p, m);
   var c = palette[80u + lab].xyz;
   var id = 0x100u + lab;
+  if (lab == 11u) { (*o).color = vec4f(palette[80u].xyz, 1.0); (*o).id = id; return; }   // outside the EM volume: not filled
   if (bands) {
     for (var k = 0u; k < NMEM; k++) {
       if (abs(m.d[k]) < 2.5) { c = palette[41u].xyz; id = 0x200u + k; }
     }
+    // open face: a distinct grey line where the section meets the edge of the EM data (no membrane there), at least
+    // 4 nm and about 2 px wide at any zoom (u.eye.w / distance = px per nm)
+    let wf = max(4.0, 2.0 * length(p - u.eye.xyz) / u.eye.w);
+    if (faceDist(p) < wf && lab != 0u) { c = palette[92u].xyz; id = 0x100u + 11u; }
   }
   (*o).color = vec4f(c, 1.0);
   (*o).id = id;
@@ -842,7 +884,7 @@ fn fsFill(in: VO) -> FOut {
   if (u.sel.w == 1u && !onCut) { return o; }          // organelle mode without a cut: the meshes show everything
   var t = t0;
   var p = eye + rd * t;
-  if ((onCut || onFace) && outerDepth(p) >= 0.0) {
+  if ((onCut || onFace) && domainDepth(p) >= 0.0) {
     // a cut face or a face of the sub-volume cube inside the cell: compartment colours with membrane bands
     let inSlab = u.cut.x < 0.5 || dot(u.plane.xyz, p) - u.plane.w < u.cut.y;
     if (u.sel.w == 0u && tileLoaded(p) && inSlab) {
@@ -856,11 +898,12 @@ fn fsFill(in: VO) -> FOut {
     o.depth = fillDepth(rd * t);
     return o;
   }
-  // exterior part of the cube: the plasma membrane, found by sphere tracing the (clamped) distance field
-  if (!onCut && !onFace && outerDepth(eye) > 0.0) { return o; }   // camera inside the cell and the cube, no cut
+  // exterior part of the cube: the plasma membrane, found by sphere tracing the (clamped) distance field; model v5:
+  // the domain (cell above the open face), so the flat face where the EM volume truncates the cell is hit as well
+  if (!onCut && !onFace && domainDepth(eye) > 0.0) { return o; }   // camera inside the cell and the cube, no cut
   var hit = false;
   for (var k = 0; k < 160; k++) {
-    let d = -outerDepth(p);
+    let d = -domainDepth(p);
     if (d < 0.25) { hit = true; break; }
     t = t + max(d, 0.5);
     if (t >= tEnd) { return o; }
@@ -870,9 +913,9 @@ fn fsFill(in: VO) -> FOut {
   let ps = p;
   // one surface colour, lit like the molecules by the smoothed surface normal
   let e = 10.0;
-  let g = vec3f(outerDepth(ps + vec3f(e, 0.0, 0.0)) - outerDepth(ps - vec3f(e, 0.0, 0.0)),
-                outerDepth(ps + vec3f(0.0, e, 0.0)) - outerDepth(ps - vec3f(0.0, e, 0.0)),
-                outerDepth(ps + vec3f(0.0, 0.0, e)) - outerDepth(ps - vec3f(0.0, 0.0, e)));
+  let g = vec3f(domainDepth(ps + vec3f(e, 0.0, 0.0)) - domainDepth(ps - vec3f(e, 0.0, 0.0)),
+                domainDepth(ps + vec3f(0.0, e, 0.0)) - domainDepth(ps - vec3f(0.0, e, 0.0)),
+                domainDepth(ps + vec3f(0.0, 0.0, e)) - domainDepth(ps - vec3f(0.0, 0.0, e)));
   var nn = -rd;
   if (dot(g, g) > 1e-6) { nn = -normalize(g); }
   let vn = (u.view * vec4f(nn, 0.0)).xyz;
@@ -883,6 +926,10 @@ fn fsFill(in: VO) -> FOut {
   }
   o.color = vec4f(palette[91u].xyz * shade, 1.0);
   o.id = 0x200u;            // plasma membrane
+  if (faceDist(ps) < outerDepth(ps) + 0.5) {          // the open face (edge of the EM data, no membrane): flat grey
+    o.color = vec4f(palette[92u].xyz * (0.9 + 0.1 * max(vn.z, 0.0)), 1.0);
+    o.id = 0x100u + 11u;
+  }
   o.depth = fillDepth(rd * t);
   return o;
 }

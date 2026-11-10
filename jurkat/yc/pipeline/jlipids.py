@@ -35,6 +35,7 @@ def main():
     area = {"PM": summ["cell"]["area_um2"], "NE": 2 * summ["ne_mid"]["area_um2"], "ER": summ["er"]["area_um2"],
             "MITO_OM": summ["mito"]["area_um2"], "MITO_IM": jp.CRISTAE_F * summ["mito"]["area_um2"],
             "GOLGI": jp.GOLGI_STACK_F * summ["golgi"]["area_um2"], "ENDO": summ["endo"]["area_um2"]}
+    of = summ.get("open_face", {}); f_vol = of.get("f_vol", 1.0); fsc = {"PM": of.get("f_pm", 1.0)}   # v5 open-face scaling
     I = pd.read_csv(f"{D}/ingredients_v0.tsv", sep="\t")
     I = I[I.transmembrane & I.ing_id.map(lambda i: os.path.exists(f"{LIB}/{i}.npz"))]
     I = I[I.ing_id.map(lambda i: "membrane" in np.load(f"{LIB}/{i}.npz").files)]
@@ -44,7 +45,7 @@ def main():
         for comp, w in json.loads(r.comp_weights).items():
             reg = jp.TMR.get(comp, "ER")
             if reg == "MITO_IM" and r.mito_om_frac >= 0.5: reg = "MITO_OM"
-            occ[reg] += r.copies * w * fp[r.ing_id] / 1e6          # nm2 -> um2
+            occ[reg] += r.copies * w * fp[r.ing_id] / 1e6 * fsc.get(reg, f_vol)   # nm2 -> um2 (v5: modelled part only)
     rows = []
     for m, a in area.items():
         spec = COMP["membranes"][m]; spec = COMP["membranes"][spec["same_as"]] if "same_as" in spec else spec

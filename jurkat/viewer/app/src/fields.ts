@@ -3,10 +3,16 @@
 // voxels per brick, clamp inside, clamp outside, index offset, data offset), then the index and data sections].
 // Index per brick: -1 inside, -2 outside, else the brick's slot; a slot holds (B+1)^3 node values.
 // Without fields the cell is the analytic sphere of radius G[0].
-// Jurkat (geometry.json kind 'jurkat_fields', jenc.web_fields): six signed distances in nm, negative inside:
+// Jurkat (geometry.json kind 'jurkat_fields', jenc.web_fields): signed distances in nm, negative inside:
 // 0 cell (plasma-membrane midsurface; outer depth = -field), 1 ne_mid (perinuclear midsurface, negative toward the
-// nucleoplasm), 2 mito (outer membrane), 3 er, 4 golgi, 5 endo. Same binary layout as yeast, 6 fields instead of 3.
-export const F_CELL = 0, F_NE = 1, F_MITO = 2, F_ER = 3, F_GOLGI = 4, F_ENDO = 5;
+// nucleoplasm), 2 mito (outer membrane), 3 er, 4 golgi, 5 endo, 6 nucleolus (model v5; no membrane). Same binary
+// layout as yeast, 6-7 fields instead of 3.
+// v5 builds append a cristae section (cell3d.crista_lumen: per-mitochondrion lamella parameters + a bricked id grid);
+// loadFields adds a CR_HDR-word header for it at the end of F, whose offset it returns in F.crOff (0 = no cristae).
+export const F_CELL = 0, F_NE = 1, F_MITO = 2, F_ER = 3, F_GOLGI = 4, F_ENDO = 5, F_NUCLEOLUS = 6;
+// cristae header (word offsets from F.crOff): 0 n, 1-3 origin, 4 h, 5-7 dims, 8 B (cells per brick edge), 9-11 bricks,
+// 12 params offset (12 per mitochondrion), 13 brick index offset, 14 id data offset, 15 CR_W, 16 CR_GAP, 17 CR_JW
+export const CR_HDR = 32;
 
 export function nFields(F: Float32Array | null): number { return F && F.length ? F[0] : 0; }
 
@@ -51,7 +57,10 @@ export async function loadFields(geo: any, fetchBin: (p: string) => Promise<Arra
   const n = fd.head.length;
   let total = 1 + 12 * n;
   for (let k = 0; k < n; k++) total += fd.n_index[k] + fd.n_data[k];
-  const F = new Float32Array(total);
+  if (fd.total) total = fd.total;                     // v5: offsets aligned to 16 words (gaps between the sections)
+  const cr = fd.cristae;
+  const crOff = cr ? Math.ceil(total / 16) * 16 : 0;
+  const F = new Float32Array(cr ? crOff + CR_HDR : total);
   F[0] = n;
   let off = 0;
   for (let k = 0; k < n; k++) {
@@ -62,5 +71,13 @@ export async function loadFields(geo: any, fetchBin: (p: string) => Promise<Arra
     const d0 = fd.head[k][11];
     for (let i = 0; i < dat.length; i++) F[d0 + i] = dat[i] * fd.q;
   }
+  if (cr) {
+    F.set(new Float32Array(buf.slice(off, off + 4 * cr.n_par)), cr.off_par); off += 4 * cr.n_par;
+    F.set(new Int32Array(buf, off, cr.n_index), cr.off_idx); off += 4 * cr.n_index;
+    F.set(new Int16Array(buf, off, cr.n_data), cr.off_dat); off += 2 * cr.n_data; off = Math.ceil(off / 4) * 4;
+    const c = cr.consts;
+    F.set([cr.n, ...cr.origin, cr.h, ...cr.dims, cr.B, ...cr.nb, cr.off_par, cr.off_idx, cr.off_dat, c.CR_W, c.CR_GAP, c.CR_JW], crOff);
+  }
+  (F as any).crOff = crOff;
   return F;
 }

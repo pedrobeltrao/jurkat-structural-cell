@@ -18,10 +18,15 @@ import numpy as np
 
 V = (__import__("os").environ.get("VCELL_ROOT", ".") + "")
 REGION_NAMES = ["cytosol", "nucleoplasm", "matrix", "ER_lumen", "golgi_lumen", "endo_lumen", "perinuclear", "mem_PM", "mem_NE",
-                "mem_ER", "mem_MITO_OM", "mem_MITO_IM", "mem_GOLGI", "mem_ENDO", "chromatin", "polysome_ribosome", "cytoskeleton", "NPC"]
+                "mem_ER", "mem_MITO_OM", "mem_MITO_IM", "mem_GOLGI", "mem_ENDO", "chromatin", "polysome_ribosome", "cytoskeleton", "NPC",
+                # model v5 (data.ts REGION_NAMES 18-30)
+                "nucleolus", "sh_PM_cyto", "sh_PM_exo", "sh_PM_cortex", "sh_NE_lamina", "sh_NE_nuc", "sh_ER_cyto", "sh_ER_lumen",
+                "sh_GOLGI_cyto", "sh_GOLGI_lumen", "sh_ENDO_cyto", "sh_ENDO_lumen", "sh_OM_cyto"]
 MEM_NAMES = ["PM", "NE", "ER", "MITO_OM", "MITO_IM", "GOLGI", "ENDO"]
 LABEL_NAMES = ["exterior", "cytosol", "perinuclear", "nucleoplasm", "nucleolus", "mito_IMS", "mito_matrix", "ER_lumen",
-               "golgi_lumen", "endolysosomal_lumen", "pore_channel"]
+               "golgi_lumen", "endolysosomal_lumen", "pore_channel", "outside_EM_volume"]
+OUTV = 11
+CR_HDR = 32                          # fields.ts: cristae header words appended to F
 TILE, Q_ORG, QSTEP = 200.0, 80.0, 360.0 / 65535.0
 OFF_BITS = 26                       # shaders.ts draw-list offset width
 
@@ -51,10 +56,20 @@ def read(path, rng=None):
 
 
 # ------------------------------------------------------------------ fields (fields.ts)
+class FArr(np.ndarray):
+    """float32 F with the cristae header offset (fields.ts F.crOff)"""
+    crOff = 0
+
+
 def load_fields(geo, d):
     fd = geo["fields"]; buf = read(os.path.join(d, fd["file"])); n = len(fd["head"])
     total = 1 + 12 * n + sum(fd["n_index"]) + sum(fd["n_data"])
-    F = np.zeros(total, np.float32); F[0] = n; off = 0
+    if fd.get("total"): total = fd["total"]
+    cr = fd.get("cristae"); crOff = -(-total // 16) * 16 if cr else 0
+    F = np.zeros(crOff + CR_HDR if cr else total, np.float32).view(FArr); F[0] = n; off = 0
+    for k in range(n):
+        for j in (10, 11):
+            assert float(np.float32(fd["head"][k][j])) == fd["head"][k][j], f"field {k} offset {fd['head'][k][j]} not exact in float32"
     for k in range(n):
         F[1 + 12 * k:13 + 12 * k] = fd["head"][k]
         ni, nd = fd["n_index"][k], fd["n_data"][k]
@@ -62,8 +77,17 @@ def load_fields(geo, d):
         F[int(fd["head"][k][10]):int(fd["head"][k][10]) + ni] = idx
         dat = np.frombuffer(buf, "<i2", nd, off); off += 2 * nd; off = (off + 3) // 4 * 4
         d0 = int(fd["head"][k][11]); F[d0:d0 + nd] = dat.astype(np.float32) * np.float32(fd["q"])
+    if cr:                                            # fields.ts loadFields: cristae section + header at crOff
+        F[cr["off_par"]:cr["off_par"] + cr["n_par"]] = np.frombuffer(buf, "<f4", cr["n_par"], off); off += 4 * cr["n_par"]
+        F[cr["off_idx"]:cr["off_idx"] + cr["n_index"]] = np.frombuffer(buf, "<i4", cr["n_index"], off); off += 4 * cr["n_index"]
+        F[cr["off_dat"]:cr["off_dat"] + cr["n_data"]] = np.frombuffer(buf, "<i2", cr["n_data"], off); off += 2 * cr["n_data"]; off = (off + 3) // 4 * 4
+        c = cr["consts"]
+        F[crOff:crOff + 18] = [cr["n"], *cr["origin"], cr["h"], *cr["dims"], cr["B"], *cr["nb"], cr["off_par"], cr["off_idx"], cr["off_dat"],
+                               c["CR_W"], c["CR_GAP"], c["CR_JW"]]
     assert off == len(buf), f"geometry_fields.bin: decoded {off} of {len(buf)} bytes"
+    F.crOff = crOff if cr else 0
     return F
+
 
 
 def field_sdf(F, x, y, z, k):
@@ -90,6 +114,8 @@ def field_sdf(F, x, y, z, k):
 class Geo:
     def __init__(self, geo, F):
         self.F = F; c = geo["consts"]; self.PERI, self.IMS, self.PORE_R = c["PERI_W"], c["IMS_W"], c["PORE_R"]
+        fc = geo.get("face") or {}; self.face_on = bool(fc.get("on")); self.zf = float(fc.get("z", -1e9)) if self.face_on else -1e9
+        self.crOff = getattr(F, "crOff", 0); self.nF = int(F[0])
         half = geo["cube_nm"] / 2; rc = self.PORE_R + 0.5 * self.PERI; reach = math.hypot(150, rc) + 2
         P = np.array(geo["pores"], float).reshape(-1, 6)
         self.n_pores_all = len(P)
@@ -111,16 +137,39 @@ class Geo:
             rho = self.in_pore(x, y, z, rc)
             if rho >= 0: dne = math.sqrt((rho - rc) ** 2 + hp * hp) - 0.5 * self.PERI
         d[1] = dne
-        om = field_sdf(self.F, x, y, z, 2); d[3] = om; matrix = om + self.IMS; d[4] = -matrix
+        om = field_sdf(self.F, x, y, z, 2); d[3] = om; matrix = om + self.IMS
+        if self.crOff and matrix < self.F[self.crOff + 15]: matrix = max(matrix, -self.crista_lumen(x, y, z, matrix))
+        d[4] = -matrix
         d[2] = field_sdf(self.F, x, y, z, 3); d[5] = field_sdf(self.F, x, y, z, 4); d[6] = field_sdf(self.F, x, y, z, 5)
         return d, matrix, hp
 
+    def crista_lumen(self, x, y, z, b):
+        """geometry.ts cristaLumen (= cell3d.crista_lumen) on the F layout of fields.ts"""
+        F, o = self.F, self.crOff; h = F[o + 4]
+        ix, iy, iz = math.floor((x - F[o + 1]) / h), math.floor((y - F[o + 2]) / h), math.floor((z - F[o + 3]) / h)
+        if ix < 0 or iy < 0 or iz < 0 or ix >= F[o + 5] or iy >= F[o + 6] or iz >= F[o + 7]: return 1e9
+        B = int(F[o + 8]); bx, by, bz = ix // B, iy // B, iz // B
+        slot = int(F[int(F[o + 13]) + (bx * int(F[o + 10]) + by) * int(F[o + 11]) + bz])
+        if slot < 0: return 1e9
+        k = int(F[int(F[o + 14]) + slot * B ** 3 + ((ix - bx * B) * B + (iy - by * B)) * B + (iz - bz * B)])
+        if k < 0: return 1e9
+        q = int(F[o + 12]) + 12 * k
+        if F[q + 11] == 0: return 1e9
+        S = float(F[q + 4]); CR_W, CR_GAP, CR_JW = (float(v) for v in F[o + 15:o + 18])
+        t = float(F[q]) * x + float(F[q + 1]) * y + float(F[q + 2]) * z - float(F[q + 3])
+        u = t - S * math.floor(t / S + 0.5); slab = abs(u) - CR_W
+        lam = max(slab, b + CR_GAP)
+        w = abs(float(F[q + 5]) * (x - F[q + 8]) + float(F[q + 6]) * (y - F[q + 9]) + float(F[q + 7]) * (z - F[q + 10])) - CR_JW
+        return min(lam, max(slab, w))
+
     def label(self, x, y, z):
         d, matrix, hp = self.mem_sdfs(x, y, z); PERI = self.PERI
+        if self.face_on and z < self.zf: return OUTV
         if d[0] < 0: return 0
         if d[1] < 0: return 2
         if hp < -0.5 * PERI:
             if hp > -PERI - 8 and self.in_pore(x, y, z, self.PORE_R + 0.5 * PERI) >= 0: return 10
+            if self.nF > 6 and field_sdf(self.F, x, y, z, 6) < 0: return 4
             return 3
         if hp < 0: return 10
         if d[3] < 0: return 6 if matrix < 0 else 5
@@ -174,84 +223,88 @@ def main():
     ap.add_argument("--ref", action="store_true", help="compare labels with cell3d on the full-resolution fields")
     ap.add_argument("--n", type=int, default=20000)
     ap.add_argument("--sample", type=int, default=300, help="tiles for the label_mask check when the index is large")
+    ap.add_argument("--geom", default=f"{V}/data/derived/jgeom_cell1.npz", help="pipeline geometry for --ref")
+    ap.add_argument("--fields-only", action="store_true", help="only geometry.json + geometry_fields.bin (no tiles/library)")
+    ap.add_argument("--strat", type=int, default=3000, help="--ref: extra points per rare label (nucleolus, IMS, ...) near them")
     a = ap.parse_args(); d = a.data.rstrip("/")
     try:
         SPLIT.update(json.loads(_raw(f"{d}/split.json"))); SPLIT["_base"] = [d + "/"]
         if len(SPLIT) > 1: print(f"split.json: {({k: v for k, v in SPLIT.items() if k != '_base'})}")
     except Exception:
         pass
-    # ---- index
-    J = json.loads(read(f"{d}/tiles/index.json")); cols = J["tile_columns"]; T = np.array(J["tiles"], np.int64)
-    c = {k: i for i, k in enumerate(cols)}
-    print(f"index.json: {len(T)} tiles, ix {T[:, 0].min()}..{T[:, 0].max()}, iy {T[:, 1].min()}..{T[:, 1].max()}, iz {T[:, 2].min()}..{T[:, 2].max()}; "
-          f"{T[:, c['n_inst']].sum():,} instances, {T[:, c['n_ghost']].sum():,} ghosts, {T[:, c['n_tri']].sum():,} mesh triangles, "
-          f"{T[:, c['gz_bytes']].sum() / 1e6:.1f} MB gz; 'wall' key: {'wall' in J}")
-    for key, want in (("region_names", REGION_NAMES), ("mem_names", MEM_NAMES), ("label_names", LABEL_NAMES)):
-        print(f"  {key} {'match the app' if J[key] == want else 'DIFFER from the app: ' + str(J[key])}")
-    assert T[:, :3].min() >= -64 and T[:, :3].max() <= 63, "tiles outside the app's tile-state grid (data.TGRID 128, -64..63)"
-    whole = bool(J.get("whole_cell")); sh = J.get("shard")
-    if whole:
-        print(f"  whole-cell build: shards {sh['path']} ({sh['block_tiles']}^3 tiles per block), overview {len(J['overview']['blocks'])} blocks")
-    # ---- library
-    tj = json.loads(read(f"{d}/library/types.json")); types = tj["types"]; nT = len(types)
-    beads = np.frombuffer(read(f"{d}/library/beads.bin"), dtype=[("x", "<i2"), ("y", "<i2"), ("z", "<i2"), ("k", "u1"), ("p", "u1")])
-    st = np.frombuffer(read(f"{d}/library/spheretree.bin"), "<f4").reshape(-1, 4)
-    bo = np.array([t["bo"] for t in types]); nb = np.array([t["nb"] for t in types]); so = np.array([t["so"] for t in types]); sn = np.array([t["sn"] for t in types])
-    print(f"types.json: {nT} types (type id field 14 bits: {'ok' if nT < 16384 else 'TOO MANY'}), {len(beads):,} beads "
-          f"(n_beads {tj['n_beads']:,}), {len(st):,} spheres (n_spheres {tj['n_spheres']:,}); offsets {'fit' if max(len(beads), len(st)) < 2 ** OFF_BITS else 'EXCEED'} 26 bits")
-    assert np.all(np.r_[0, np.cumsum(nb)[:-1]] == bo) and np.all(np.r_[0, np.cumsum(sn)[:-1]] == so), "bo/so not cumulative"
-    print(f"  beads/type {nb.min()}..{nb.max()}, nucleotide beads {int((beads['k'] == 1).sum()):,}, pLDDT byte values {np.unique(beads['p'])[:5]}, "
-          f"plddt_mean non-null: {sum(t['plddt_mean'] is not None for t in types)}; library GPU size {len(beads) * 16 / 2**20:.0f} MB (16 B/bead)")
-    ids = [t["id"] for t in types]
-    for pat in ("RIBO", "NUCLEOSOME", "H1-", "NPC", "MT_", "F_"):
-        m = [i for i in ids if (i == pat if pat in ("NPC", "NUCLEOSOME") else i.startswith(pat))]
-        print(f"  special '{pat}': {m[:6]}{' ...' if len(m) > 6 else ''}")
-    print(f"  src values: {sorted(set(t['src'] for t in types))}; copies total {sum(t['copies'] for t in types):,}")
-    tt = read(f"{d}/types_tiles.bin"); toff = np.frombuffer(tt, "<u4", nT + 1); tlist = np.frombuffer(tt, "<u4" if J.get("types_tiles_u32") else "<u2", offset=4 * (nT + 1))
-    assert toff[-1] == len(tlist) and tlist.max(initial=0) < len(T), "types_tiles.bin inconsistent"
-    print(f"types_tiles.bin: {len(tlist):,} (type, tile) entries, consistent")
-    # ---- one tile
-    if a.tile: ti = int(np.where(np.all(T[:, :3] == a.tile, axis=1))[0][0])
-    else: ti = int(np.argmin(np.abs(T[:, :3] + 0.5).sum(1)))            # a tile at the cube centre
-    tl = T[ti]
-    if sh:                                            # worker.ts getTileBytes: byte range of the block shard
-        b = sh["block_tiles"]; sp = sh["path"].format(bx=tl[0] // b, by=tl[1] // b, bz=tl[2] // b)
-        D = decode_tile(read(f"{d}/{sp}", (int(tl[c["off"]]), int(tl[c["gz_bytes"]]))))
-        print(f"tile {tuple(tl[:3])} read as bytes {tl[c['off']]}+{tl[c['gz_bytes']]} of {sp}")
-    else:
-        D = decode_tile(read(f"{d}/tiles/{tl[0]}_{tl[1]}_{tl[2]}.bin.gz"))
-    typ, qi, reg, flg, p, big = decode_inst(D["inst"], D["lo"])
-    print(f"tile {tuple(tl[:3])}: {len(D['inst']):,} instances (index {tl[c['n_inst']]:,}), {len(D['ghost'])} ghosts, {len(D['verts'])} verts, "
-          f"{len(D['tris'])} tris, {D['rest']} trailing bytes")
-    if len(typ):
-        print(f"  type ids {typ.min()}..{typ.max()} (of {nT}), near-membrane flag {int((flg & 1).sum())}, "
-              f"positions in tile {np.mean(np.all((p >= D['lo']) & (p < D['lo'] + TILE), axis=1)) * 100:.1f}%")
-        h = np.bincount(reg, minlength=len(REGION_NAMES))
-        print("  regions: " + ", ".join(f"{REGION_NAMES[i] if i < len(REGION_NAMES) else i}={h[i]}" for i in np.nonzero(h)[0]))
-        top = np.bincount(typ, minlength=nT).argsort()[::-1][:5]
-        print("  most frequent: " + ", ".join(f"{types[i]['id']}({types[i]['gene']})x{int((typ == i).sum())}" for i in top))
-    if len(D["tris"]):
-        fm = np.bincount(D["fmem"], minlength=7)
-        print("  face_mem: " + ", ".join(f"{MEM_NAMES[i]}={fm[i]}" for i in np.nonzero(fm)[0]) + f"; tri index max {D['tris'].max()} < {len(D['verts'])}")
-    if whole:
-        tot = sum(t["copies"] for t in types)
-        print(f"  index n_inst total {T[:, c['n_inst']].sum():,} vs library copies {tot:,} "
-              f"({'equal' if T[:, c['n_inst']].sum() == tot else 'DIFFERENT'})")
-        if D["mrna"]: print(f"  mRNA: {len(D['mrna'])} pieces, max step {max(np.linalg.norm(np.diff(m, axis=0), axis=1).max() for m in D['mrna']):.3f} nm")
-        # one overview block (tiles.ts Overview.onLoaded)
-        ov = J["overview"]; oc = ov["columns"]; ob = np.array(ov["blocks"])
-        k = int(np.argmax(ob[:, oc.index("n_proxy")]))
-        B = ob[k]; buf = read(f"{d}/" + ov["path"].format(bx=B[0], by=B[1], bz=B[2]))
-        hd = np.frombuffer(buf, "<u4", 2); assert hd[0] == 0x314F4359, "bad overview magic"
-        tl_ = np.frombuffer(buf, "<i4", 4 * int(hd[1]), 8).reshape(-1, 4); rec = np.frombuffer(buf, "<u4", offset=8 + 16 * int(hd[1])).reshape(-1, 4)
-        assert len(rec) == tl_[:, 3].sum() == B[oc.index("n_proxy")], "overview record count"
-        keys = {tuple(r[:3]) for r in T[:, :3].tolist()}
-        miss = sum(tuple(r[:3]) not in keys for r in tl_.tolist())
-        w = rec[:, 3]; xyz = rec[:, :3].copy().view("<f4")
-        inside = np.all((xyz >= B[:3] * ov["block_nm"]) & (xyz < (B[:3] + 1) * ov["block_nm"]), axis=1).mean()
-        print(f"overview block {tuple(B[:3])}: {int(hd[1])} tiles ({miss} not in index), {len(rec):,} stand-ins, kind {np.unique(w & 15)}, "
-              f"regions {np.unique((w >> 4) & 31).tolist()}, radius {((w >> 9) & 1023).min() / 10}..{((w >> 9) & 1023).max() / 10} nm "
-              f"(median {np.median((w >> 9) & 1023) / 10}), inside block {inside * 100:.1f}%")
+    if not a.fields_only:
+        # ---- index
+        J = json.loads(read(f"{d}/tiles/index.json")); cols = J["tile_columns"]; T = np.array(J["tiles"], np.int64)
+        c = {k: i for i, k in enumerate(cols)}
+        print(f"index.json: {len(T)} tiles, ix {T[:, 0].min()}..{T[:, 0].max()}, iy {T[:, 1].min()}..{T[:, 1].max()}, iz {T[:, 2].min()}..{T[:, 2].max()}; "
+              f"{T[:, c['n_inst']].sum():,} instances, {T[:, c['n_ghost']].sum():,} ghosts, {T[:, c['n_tri']].sum():,} mesh triangles, "
+              f"{T[:, c['gz_bytes']].sum() / 1e6:.1f} MB gz; 'wall' key: {'wall' in J}")
+        for key, want in (("region_names", REGION_NAMES), ("mem_names", MEM_NAMES), ("label_names", LABEL_NAMES)):
+            print(f"  {key} {'match the app' if J[key] == want else 'DIFFER from the app: ' + str(J[key])}")
+        assert T[:, :3].min() >= -64 and T[:, :3].max() <= 63, "tiles outside the app's tile-state grid (data.TGRID 128, -64..63)"
+        whole = bool(J.get("whole_cell")); sh = J.get("shard")
+        if whole:
+            print(f"  whole-cell build: shards {sh['path']} ({sh['block_tiles']}^3 tiles per block), overview {len(J['overview']['blocks'])} blocks")
+        # ---- library
+        tj = json.loads(read(f"{d}/library/types.json")); types = tj["types"]; nT = len(types)
+        beads = np.frombuffer(read(f"{d}/library/beads.bin"), dtype=[("x", "<i2"), ("y", "<i2"), ("z", "<i2"), ("k", "u1"), ("p", "u1")])
+        st = np.frombuffer(read(f"{d}/library/spheretree.bin"), "<f4").reshape(-1, 4)
+        bo = np.array([t["bo"] for t in types]); nb = np.array([t["nb"] for t in types]); so = np.array([t["so"] for t in types]); sn = np.array([t["sn"] for t in types])
+        print(f"types.json: {nT} types (type id field 14 bits: {'ok' if nT < 16384 else 'TOO MANY'}), {len(beads):,} beads "
+              f"(n_beads {tj['n_beads']:,}), {len(st):,} spheres (n_spheres {tj['n_spheres']:,}); offsets {'fit' if max(len(beads), len(st)) < 2 ** OFF_BITS else 'EXCEED'} 26 bits")
+        assert np.all(np.r_[0, np.cumsum(nb)[:-1]] == bo) and np.all(np.r_[0, np.cumsum(sn)[:-1]] == so), "bo/so not cumulative"
+        print(f"  beads/type {nb.min()}..{nb.max()}, nucleotide beads {int((beads['k'] == 1).sum()):,}, pLDDT byte values {np.unique(beads['p'])[:5]}, "
+              f"plddt_mean non-null: {sum(t['plddt_mean'] is not None for t in types)}; library GPU size {len(beads) * 16 / 2**20:.0f} MB (16 B/bead)")
+        ids = [t["id"] for t in types]
+        for pat in ("RIBO", "NUCLEOSOME", "H1-", "NPC", "MT_", "F_"):
+            m = [i for i in ids if (i == pat if pat in ("NPC", "NUCLEOSOME") else i.startswith(pat))]
+            print(f"  special '{pat}': {m[:6]}{' ...' if len(m) > 6 else ''}")
+        print(f"  src values: {sorted(set(t['src'] for t in types))}; copies total {sum(t['copies'] for t in types):,}")
+        tt = read(f"{d}/types_tiles.bin"); toff = np.frombuffer(tt, "<u4", nT + 1); tlist = np.frombuffer(tt, "<u4" if J.get("types_tiles_u32") else "<u2", offset=4 * (nT + 1))
+        assert toff[-1] == len(tlist) and tlist.max(initial=0) < len(T), "types_tiles.bin inconsistent"
+        print(f"types_tiles.bin: {len(tlist):,} (type, tile) entries, consistent")
+        # ---- one tile
+        if a.tile: ti = int(np.where(np.all(T[:, :3] == a.tile, axis=1))[0][0])
+        else: ti = int(np.argmin(np.abs(T[:, :3] + 0.5).sum(1)))            # a tile at the cube centre
+        tl = T[ti]
+        if sh:                                            # worker.ts getTileBytes: byte range of the block shard
+            b = sh["block_tiles"]; sp = sh["path"].format(bx=tl[0] // b, by=tl[1] // b, bz=tl[2] // b)
+            D = decode_tile(read(f"{d}/{sp}", (int(tl[c["off"]]), int(tl[c["gz_bytes"]]))))
+            print(f"tile {tuple(tl[:3])} read as bytes {tl[c['off']]}+{tl[c['gz_bytes']]} of {sp}")
+        else:
+            D = decode_tile(read(f"{d}/tiles/{tl[0]}_{tl[1]}_{tl[2]}.bin.gz"))
+        typ, qi, reg, flg, p, big = decode_inst(D["inst"], D["lo"])
+        print(f"tile {tuple(tl[:3])}: {len(D['inst']):,} instances (index {tl[c['n_inst']]:,}), {len(D['ghost'])} ghosts, {len(D['verts'])} verts, "
+              f"{len(D['tris'])} tris, {D['rest']} trailing bytes")
+        if len(typ):
+            print(f"  type ids {typ.min()}..{typ.max()} (of {nT}), near-membrane flag {int((flg & 1).sum())}, "
+                  f"positions in tile {np.mean(np.all((p >= D['lo']) & (p < D['lo'] + TILE), axis=1)) * 100:.1f}%")
+            h = np.bincount(reg, minlength=len(REGION_NAMES))
+            print("  regions: " + ", ".join(f"{REGION_NAMES[i] if i < len(REGION_NAMES) else i}={h[i]}" for i in np.nonzero(h)[0]))
+            top = np.bincount(typ, minlength=nT).argsort()[::-1][:5]
+            print("  most frequent: " + ", ".join(f"{types[i]['id']}({types[i]['gene']})x{int((typ == i).sum())}" for i in top))
+        if len(D["tris"]):
+            fm = np.bincount(D["fmem"], minlength=7)
+            print("  face_mem: " + ", ".join(f"{MEM_NAMES[i]}={fm[i]}" for i in np.nonzero(fm)[0]) + f"; tri index max {D['tris'].max()} < {len(D['verts'])}")
+        if whole:
+            tot = sum(t["copies"] for t in types)
+            print(f"  index n_inst total {T[:, c['n_inst']].sum():,} vs library copies {tot:,} "
+                  f"({'equal' if T[:, c['n_inst']].sum() == tot else 'DIFFERENT'})")
+            if D["mrna"]: print(f"  mRNA: {len(D['mrna'])} pieces, max step {max(np.linalg.norm(np.diff(m, axis=0), axis=1).max() for m in D['mrna']):.3f} nm")
+            # one overview block (tiles.ts Overview.onLoaded)
+            ov = J["overview"]; oc = ov["columns"]; ob = np.array(ov["blocks"])
+            k = int(np.argmax(ob[:, oc.index("n_proxy")]))
+            B = ob[k]; buf = read(f"{d}/" + ov["path"].format(bx=B[0], by=B[1], bz=B[2]))
+            hd = np.frombuffer(buf, "<u4", 2); assert hd[0] == 0x314F4359, "bad overview magic"
+            tl_ = np.frombuffer(buf, "<i4", 4 * int(hd[1]), 8).reshape(-1, 4); rec = np.frombuffer(buf, "<u4", offset=8 + 16 * int(hd[1])).reshape(-1, 4)
+            assert len(rec) == tl_[:, 3].sum() == B[oc.index("n_proxy")], "overview record count"
+            keys = {tuple(r[:3]) for r in T[:, :3].tolist()}
+            miss = sum(tuple(r[:3]) not in keys for r in tl_.tolist())
+            w = rec[:, 3]; xyz = rec[:, :3].copy().view("<f4")
+            inside = np.all((xyz >= B[:3] * ov["block_nm"]) & (xyz < (B[:3] + 1) * ov["block_nm"]), axis=1).mean()
+            print(f"overview block {tuple(B[:3])}: {int(hd[1])} tiles ({miss} not in index), {len(rec):,} stand-ins, kind {np.unique(w & 15)}, "
+                  f"regions {np.unique((w >> 4) & 31).tolist()}, radius {((w >> 9) & 1023).min() / 10}..{((w >> 9) & 1023).max() / 10} nm "
+                  f"(median {np.median((w >> 9) & 1023) / 10}), inside block {inside * 100:.1f}%")
     # ---- geometry
     geo = json.loads(read(f"{d}/geometry.json")); F = load_fields(geo, d); G = Geo(geo, F)
     names = geo["fields"]["names"]; half = geo["cube_nm"] / 2
@@ -267,34 +320,74 @@ def main():
     # label histogram on a grid through the cube
     s = (np.arange(16) + 0.5) / 16 * 2 * half - half
     lab = [G.label(x, y, z) for x in s for y in s for z in s]
-    h = np.bincount(lab, minlength=11)
+    h = np.bincount(lab, minlength=len(LABEL_NAMES))
     print("  label fractions (16^3 grid): " + ", ".join(f"{LABEL_NAMES[i]} {h[i] / len(lab) * 100:.1f}%" for i in np.nonzero(h)[0]))
-    # ---- label_mask of every tile re-derived with the app's rule (jenc samples 5^3 points per tile)
-    s5 = (np.arange(5) + 0.5) * TILE / 5; ok = 0; bad = []
-    TS = T if len(T) <= 2000 else T[np.random.default_rng(1).choice(len(T), a.sample, replace=False)]
-    for r in TS:
-        lo = r[:3] * TILE; m = 0
-        for x in s5:
-            for y in s5:
-                for z in s5: m |= 1 << G.label(lo[0] + x, lo[1] + y, lo[2] + z)
-        if m == r[c["label_mask"]]: ok += 1
-        else: bad.append((tuple(r[:3]), int(r[c["label_mask"]]), m))
-    print(f"label_mask re-derived with the app rule: {ok}/{len(TS)} tiles identical" + (f"; differing (tile, index, app): {bad[:5]}" if bad else ""))
+    if G.face_on: print(f"  open face at z = {G.zf:.1f} nm (label {LABEL_NAMES[OUTV]} below)")
+    if G.crOff: print(f"  cristae: {int(F[G.crOff])} mitochondria, id grid {[int(v) for v in F[G.crOff + 5:G.crOff + 8]]} at {F[G.crOff + 4]} nm, "
+                      f"{geo['fields']['cristae']['n_data'] // int(F[G.crOff + 8]) ** 3} stored id bricks")
+    if not a.fields_only:
+        # ---- label_mask of every tile re-derived with the app's rule (jenc samples 5^3 points per tile)
+        s5 = (np.arange(5) + 0.5) * TILE / 5; ok = 0; bad = []
+        TS = T if len(T) <= 2000 else T[np.random.default_rng(1).choice(len(T), a.sample, replace=False)]
+        for r in TS:
+            lo = r[:3] * TILE; m = 0
+            for x in s5:
+                for y in s5:
+                    for z in s5: m |= 1 << G.label(lo[0] + x, lo[1] + y, lo[2] + z)
+            if m == r[c["label_mask"]]: ok += 1
+            else: bad.append((tuple(r[:3]), int(r[c["label_mask"]]), m))
+        print(f"label_mask re-derived with the app rule: {ok}/{len(TS)} tiles identical" + (f"; differing (tile, index, app): {bad[:5]}" if bad else ""))
+        # ---- open face: no membrane triangle of a tile at the face lies below it (jenc.clip_mesh)
+        if G.face_on:
+            at = T[(T[:, 2] * TILE <= G.zf + TILE) & ((T[:, 2] + 1) * TILE > G.zf - TILE) & (T[:, c["n_tri"]] > 0)]
+            worst, ntri = np.inf, 0
+            for r in at[np.random.default_rng(2).permutation(len(at))[:20]]:
+                if sh:
+                    b = sh["block_tiles"]; sp = sh["path"].format(bx=r[0] // b, by=r[1] // b, bz=r[2] // b)
+                    Dt = decode_tile(read(f"{d}/{sp}", (int(r[c["off"]]), int(r[c["gz_bytes"]]))))
+                else:
+                    Dt = decode_tile(read(f"{d}/tiles/{r[0]}_{r[1]}_{r[2]}.bin.gz"))
+                if len(Dt["tris"]):
+                    cz = Dt["verts"][Dt["tris"].astype(np.int64)].mean(1)[:, 2]; worst = min(worst, cz.min() - G.zf); ntri += len(cz)
+            print(f"open face: {min(len(at), 20)} tiles at the face decoded, {ntri:,} triangles, lowest centroid {worst:+.2f} nm above the face "
+                  f"({'ok' if worst >= -0.01 else 'MEMBRANE BELOW THE FACE'})")
     # ---- optional: compare with the pipeline (cell3d on the full-resolution fields)
     if a.ref:
         sys.path.insert(0, f"{V}/jurkat/yc/pipeline"); import cell3d as c3
-        z = np.load(f"{V}/data/derived/jgeom_cell1.npz"); cell = c3.Cell(z["G"], z["pores"])
+        z = np.load(a.geom); cell = c3.Cell(z["G"], z["pores"])
         C = np.array(geo["centre_nm"]); rng = np.random.default_rng(0)
-        P = rng.uniform(-half, half, (a.n, 3)); ref = cell.labels(P + C)
+        lo_, hi_ = -half, half
+        if geo.get("whole_cell"):                                      # sample the cell's bounding box, not the whole cube
+            h0 = geo["fields"]["head"][0]; lo_ = np.array(h0[:3]); hi_ = lo_ + np.array(h0[4:7]) * h0[3] * h0[7]
+        P = rng.uniform(lo_, hi_, (a.n, 3)); ref = cell.labels(P + C)
+        # stratified extra points for small compartments: random candidates labelled by cell3d, up to --strat per label
+        Q = rng.uniform(lo_, hi_, (4_000_000, 3)); rq = cell.labels(Q + C)
+        # crista lumens: IMS points inside the boundary inner membrane (matrix SDF of the boundary < 0)
+        mq = cell.mems(Q + C); lumen = (rq == c3.IMS) & (mq[:, c3.M_OM] + c3.IMS_W < 0)
+        extra, tag = [], []
+        for L in (c3.NUCL, c3.IMS, c3.MATRIX, c3.ERL, c3.GOLGI, c3.ENDO, c3.PERI, c3.PORE, c3.OUTV):
+            k = np.flatnonzero(rq == L)[:a.strat]; extra.append(Q[k]); tag += [LABEL_NAMES[L]] * len(k)
+        k = np.flatnonzero(lumen)[:a.strat]; extra.append(Q[k]); tag += ["IMS: crista lumen"] * len(k)
+        P = np.r_[P, np.concatenate(extra)]; ref = np.r_[ref, np.concatenate([cell.labels(e + C) if len(e) else np.zeros(0, np.int8) for e in extra])]
+        tag = np.array(["random"] * a.n + tag)
         app = np.array([G.label(*q) for q in P])
-        agree = (ref == app).mean()
-        print(f"labels vs cell3d at {a.n} random points: {agree * 100:.2f}% agree")
-        if agree < 1:
+        rnd = tag == "random"; ins = rnd & (ref != c3.EXT) & (ref != c3.OUTV)
+        print(f"labels vs cell3d ({a.geom}): random points {rnd.sum():,}: {(ref == app)[rnd].mean() * 100:.2f}% agree; "
+              f"inside the cell {ins.sum():,}: {(ref == app)[ins].mean() * 100:.2f}%")
+        print("  per cell3d label (random + stratified points): " + "; ".join(
+            f"{LABEL_NAMES[L]} {(app[ref == L] == L).mean() * 100:.1f}% of {(ref == L).sum():,}" for L in np.unique(ref)))
+        k = tag == "IMS: crista lumen"
+        if k.any(): print(f"  crista lumens (IMS inside the boundary IM): {(app[k] == c3.IMS).mean() * 100:.1f}% of {k.sum():,} labelled IMS by the app "
+                          f"(matrix {(app[k] == c3.MATRIX).mean() * 100:.1f}%)")
+        dis = ref != app
+        if dis.any():
             mm = cell.mems(P + C); dmin = np.abs(mm[:, :7]).min(1)
-            dis = ref != app
-            print(f"  disagreeing points: median distance to the nearest membrane {np.median(dmin[dis]):.2f} nm (all points {np.median(dmin):.1f} nm); "
-                  f"pairs (cell3d->app): {sorted(set(zip(ref[dis].tolist(), app[dis].tolist())))[:10]}")
-
+            dn = np.array([abs(c3.field_sdf(*(q + C), cell.G, c3.F_NUCLEOLUS)) if c3.F_NUCLEOLUS < int(cell.G[c3.G_N]) else 1e9 for q in P[dis]])
+            print(f"  disagreeing points: median distance to the nearest membrane {np.median(dmin[dis]):.2f} nm (all points {np.median(dmin):.1f} nm), "
+                  f"to the nucleolus surface {np.median(dn):.1f} nm")
+            pairs, cnts = np.unique(np.c_[ref[dis], app[dis]], axis=0, return_counts=True)
+            o = np.argsort(-cnts)[:12]
+            print("  pairs (cell3d -> app): " + ", ".join(f"{LABEL_NAMES[pairs[i][0]]}->{LABEL_NAMES[pairs[i][1]]} {cnts[i]}" for i in o))
 
 if __name__ == "__main__":
     main()

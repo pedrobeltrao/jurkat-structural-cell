@@ -3,7 +3,11 @@
 Collision geometry: per-ingredient sphere trees (st_c, st_r) on a local uniform grid (tile + halo).
 Region tests: exact analytic SDFs from cell3d (label + distance to every membrane).
 Membrane proteins: sampled on the tile's marching-cubes mesh by area, projected onto the exact surface,
-library +z aligned to the SDF gradient (cytoplasmic / N-side), random spin."""
+library +z aligned to the SDF gradient (cytoplasmic / N-side), random spin.
+Shell jobs (v5): soluble ingredients restricted to a band of signed distance from one membrane (lipid-anchored proteins,
+cortical layer, lamina): candidates are sampled on that membrane's mesh, projected, offset along the normal into the band,
+checked as volume jobs (label mask + membrane clearance) plus the band test on the centre; half of the tries align the
+library's smallest principal axis with the membrane normal (as in thin lumens)."""
 import numpy as np
 import numba as nb
 import cell3d as c3
@@ -148,6 +152,8 @@ def check_membrane(P, R, ZL, own, G, pores, pidx, PT, PQ, PC, out):
             return False
         if own != c3.M_PM and out[c3.M_OUTER] < R[s]:   # outside the cell (PM proteins span it: exo domains are extracellular)
             return False
+        if own == c3.M_PM and c3.face_dist(P[s, 2], G) < R[s]:   # open face: no PM, nothing beyond the imaged volume
+            return False
         z = ZL[s]
         if abs(z) >= R[s] + c3.HALF:
             d = out[own]
@@ -213,6 +219,24 @@ LUMEN_GIVEUP_F = 3
 
 
 @nb.njit(cache=True, fastmath=True)
+def sample_tri(t0, t1, CUMA, TRI, t):
+    """random point on triangles [t0, t1) of the tile mesh, by area"""
+    u = np.random.random() * CUMA[t1 - 1] if t0 == 0 else CUMA[t0 - 1] + np.random.random() * (CUMA[t1 - 1] - CUMA[t0 - 1])
+    lo_i = t0; hi_i = t1 - 1
+    while lo_i < hi_i:
+        mid = (lo_i + hi_i) // 2
+        if CUMA[mid] < u:
+            lo_i = mid + 1
+        else:
+            hi_i = mid
+    a = np.random.random(); b = np.random.random()
+    if a + b > 1:
+        a = 1 - a; b = 1 - b
+    for k in range(3):
+        t[k] = TRI[lo_i, k] + a * (TRI[lo_i, 3 + k] - TRI[lo_i, k]) + b * (TRI[lo_i, 6 + k] - TRI[lo_i, k])
+
+
+@nb.njit(cache=True, fastmath=True)
 def lumen_quat(t, m, qf, G, pores, pidx, PT, PQ, PC, out, nrm, q):
     """q = (z -> local normal of membrane m at t, random spin) * qf; False if the normal is undefined"""
     e = 1.0; n2 = 0.0
@@ -247,14 +271,18 @@ def pack_tile(seed, lo, size, halo,
               OC, OR,
               n_mrna, mrna_mean, cyto_region,
               max_tries, give_up, cap_s, cap_e,
-              AT, AP, ptn_off, ptn_idx, ptn_str, ptn_kind, prm, QFLAT, REGMEM):
+              AT, AP, ptn_off, ptn_idx, ptn_str, ptn_kind, prm, QFLAT, REGMEM,
+              n_shell0, SH_MEM, SH_MASK, SH_SIGN, SH_D0, SH_D1, SH_RAD):
     """... AT, AP: types and positions of instances already placed around the tile (anchors); ptn_off/ptn_idx/ptn_str/ptn_kind:
     partner CSR over library types and prm (A_contact, A_loose, K_half, P_max, attract tries, loose gap min, max),
     see organisation.py. Empty ptn_off disables attraction.
     QFLAT (n_types, 4): rotation taking each library's smallest principal axis to +z; REGMEM (n volume regions): membrane
     whose normal a thin lumen follows (-1 none). In such lumens half of the tries align the smallest axis with the local
     membrane normal (random spin), and a job gives up after LUMEN_GIVEUP_F x give_up failures in a row. Empty QFLAT
-    disables this."""
+    disables this.
+    Regions >= n_shell0 are shells: shell s = reg - n_shell0 places a soluble ingredient with its centre at signed distance
+    SH_SIGN[s] * u, u in [SH_D0[s], SH_D1[s] (+ BR if SH_RAD[s])], from membrane SH_MEM[s] (SDF sign convention of cell3d:
+    + = cytoplasmic / nucleoplasmic / matrix side), all beads in labels SH_MASK[s] (bitmask) with membrane clearance."""
     np.random.seed(seed)
     n_types = BR.shape[0]
     res_pos = np.empty((n_types, KRES, 3)); res_n = np.zeros(n_types, np.int64)
@@ -282,9 +310,17 @@ def pack_tile(seed, lo, size, halo,
         a0 = st_off[li]; a1 = st_off[li + 1]
         stc = STC[a0:a1]; str_ = STR[a0:a1]
         P = np.empty((a1 - a0, 3)); ZL = np.empty(a1 - a0)
-        is_mem = reg >= n_mem_regions0
+        is_shell = reg >= n_shell0
+        is_mem = reg >= n_mem_regions0 and not is_shell
         mi = reg - n_mem_regions0
-        if is_mem:
+        sm = -1; sa = 0.0; sb = 0.0; ssg = 1.0; si = 0
+        if is_shell:
+            si = reg - n_shell0; sm = SH_MEM[si]; ssg = SH_SIGN[si]
+            sa = SH_D0[si]; sb = SH_D1[si] + (BR[li] if SH_RAD[si] else 0.0)
+            t0 = tri_off[sm]; t1 = tri_off[sm + 1]
+            if t1 <= t0:
+                continue
+        elif is_mem:
             t0 = tri_off[mi]; t1 = tri_off[mi + 1]
             if t1 <= t0:
                 continue
@@ -294,8 +330,8 @@ def pack_tile(seed, lo, size, halo,
             v0 = vox_off[reg]; v1 = vox_off[reg + 1]
             if v1 <= v0:
                 continue
-        thin = (not is_mem) and QFLAT.shape[0] == n_types and REGMEM[reg] >= 0
-        gu = give_up * LUMEN_GIVEUP_F if thin else give_up
+        thin = (not is_mem) and (not is_shell) and QFLAT.shape[0] == n_types and REGMEM[reg] >= 0
+        gu = give_up * LUMEN_GIVEUP_F if (thin or is_shell) else give_up
         fails_in_row = 0
         for inst in range(jn[j]):
             success = False
@@ -325,7 +361,27 @@ def pack_tile(seed, lo, size, halo,
                     else:
                         dd = BR[li] + BR[pt] + prm[5] + (prm[6] - prm[5]) * np.random.random()
                     _near(res_pos, res_n, pt, dd, t)
-                if is_mem and near:
+                if is_shell:
+                    sample_tri(t0, t1, CUMA, TRI, t)
+                    if not project_to_membrane(t, sm, nrm, G, pores, pidx, PT, PQ, PC, out):
+                        continue
+                    off = ssg * (sa + np.random.random() * (sb - sa))
+                    for k in range(3):
+                        t[k] += off * nrm[k]
+                    if t[0] < lo[0] or t[1] < lo[1] or t[2] < lo[2] or t[0] >= lo[0] + size or t[1] >= lo[1] + size or t[2] >= lo[2] + size:
+                        continue
+                    u_ = ssg * mem_value(t[0], t[1], t[2], sm, G, pores, pidx, PT, PQ, PC, out)
+                    if u_ < sa or u_ > sb:
+                        continue
+                    if not (QFLAT.shape[0] == n_types and np.random.random() < 0.5 and lumen_quat(t, sm, QFLAT[li], G, pores, pidx, PT, PQ, PC, out, nrm, q)):
+                        rand_quat(q)
+                    quat_mat(q, M)
+                    transform(stc, M, t, P)
+                    if g_overlap(glo, H_GRID, dims, head, nxt, sid, cen, rad, P, str_, TOL):
+                        continue
+                    if not check_volume(P, str_, t[0], t[1], t[2], BR[li], SH_MASK[si], G, pores, pidx, PT, PQ, PC, out):
+                        continue
+                elif is_mem and near:
                     pass
                 elif is_mem:
                     u = np.random.random() * CUMA[t1 - 1] if t0 == 0 else CUMA[t0 - 1] + np.random.random() * (CUMA[t1 - 1] - CUMA[t0 - 1])
@@ -342,7 +398,9 @@ def pack_tile(seed, lo, size, halo,
                         a = 1 - a; b = 1 - b
                     for k in range(3):
                         t[k] = TRI[lo_i, k] + a * (TRI[lo_i, 3 + k] - TRI[lo_i, k]) + b * (TRI[lo_i, 6 + k] - TRI[lo_i, k])
-                if is_mem:
+                if is_shell:
+                    pass
+                elif is_mem:
                     if not project_to_membrane(t, mi, nrm, G, pores, pidx, PT, PQ, PC, out):
                         continue
                     if t[0] < lo[0] or t[1] < lo[1] or t[2] < lo[2] or t[0] >= lo[0] + size or t[1] >= lo[1] + size or t[2] >= lo[2] + size:

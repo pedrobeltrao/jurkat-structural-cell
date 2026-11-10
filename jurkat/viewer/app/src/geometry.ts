@@ -1,10 +1,10 @@
 // JavaScript port of the compartment geometry (same as the WGSL fill shader) for the minimap and picking.
-// Jurkat T cell: six distance fields (fields.ts) and nuclear pores; label rule = cell3d.mem_sdfs + cell3d.label_from
-// of the Jurkat pipeline (jurkat/yc/pipeline/cell3d.py).
-import { F_CELL, F_NE, F_MITO, F_ER, F_GOLGI, F_ENDO, nFields, fieldSdf } from './fields';
+// Jurkat T cell: distance fields (fields.ts), nuclear pores, and (model v5) the nucleolus field, procedural cristae
+// and the open face; label rule = cell3d.mem_sdfs + cell3d.label_from of the Jurkat pipeline (jurkat/yc/pipeline/cell3d.py).
+import { F_CELL, F_NE, F_MITO, F_ER, F_GOLGI, F_ENDO, F_NUCLEOLUS, nFields, fieldSdf } from './fields';
 
-// label codes (data.LABEL_NAMES order = cell3d.LABEL_NAMES)
-export const L_EXT = 0, L_CYTO = 1, L_PERI = 2, L_NUCP = 3, L_NUCL = 4, L_IMS = 5, L_MATRIX = 6, L_ERL = 7, L_GOLGI = 8, L_ENDO = 9, L_PORE = 10;
+// label codes (data.LABEL_NAMES order = cell3d.LABEL_NAMES); L_OUTV: below the open face (outside the imaged EM volume)
+export const L_EXT = 0, L_CYTO = 1, L_PERI = 2, L_NUCP = 3, L_NUCL = 4, L_IMS = 5, L_MATRIX = 6, L_ERL = 7, L_GOLGI = 8, L_ENDO = 9, L_PORE = 10, L_OUTV = 11;
 // membrane codes (data.MEM_NAMES order = jenc.MEM_NAMES = face_mem)
 export const M_PM = 0, M_NE = 1, M_ER = 2, M_OM = 3, M_IM = 4, M_GOLGI = 5, M_ENDO = 6, NMEM = 7;
 
@@ -24,6 +24,11 @@ export function prepareGeometry(geo: any) {
   geo.G = new Array(23).fill(0);
   geo.G[0] = half; geo.G[1] = half; geo.G[2] = half;
   geo.G[11] = 1; geo.G[12] = 1; geo.G[13] = 1;         // (yeast nucleus semi-axes; unused, non-zero for safety)
+  // model v5 (fill shader uniform Geo.G0.w, G1.x, G1.y): open face flag and z (cell3d G_FACE / G_ZFACE); offset of the
+  // cristae header in F (fields.ts CR_HDR; 0 = no cristae; a multiple of 16, exact in float32)
+  geo.faceOn = !!geo.face?.on; geo.zFace = geo.faceOn ? geo.face.z : -1e9;
+  geo.crOff = (geo.F as any)?.crOff ?? 0;
+  geo.G[3] = geo.faceOn ? 1 : 0; geo.G[4] = geo.zFace; geo.G[5] = geo.crOff;
   geo.PT = []; geo.PQ = []; geo.PC = [];
   const c = geo.consts, rc = c.PORE_R + 0.5 * c.PERI_W;
   const reach = Math.hypot(PORE_AXIAL, rc) + 2;        // a pore influences points at most this far from its centre
@@ -58,8 +63,10 @@ export interface MemSdf { d: number[]; matrix: number; hp: number }
 export class Geometry {
   G: number[]; pores: number[]; c: any; grid: any; n3: number;
   F: Float32Array | null;
+  faceOn: boolean; zFace: number; crOff: number;
   constructor(geo: any) {
     this.F = geo.F ?? null;
+    this.faceOn = !!geo.faceOn; this.zFace = geo.zFace ?? -1e9; this.crOff = geo.crOff ?? 0;
     this.G = geo.G; this.pores = geo.pores; this.c = geo.consts; this.grid = geo.grid;
     this.n3 = geo.grid.n ** 3;
   }
@@ -85,6 +92,30 @@ export class Geometry {
     }
     return { k: -1, rho: 0, z: 0 };
   }
+  /** height above the open face (cell3d.face_dist); 1e9 without one */
+  faceDist(z: number): number { return this.faceOn ? z - this.zFace : 1e9; }
+  /** depth inside the modelled domain: min(PM depth, height above the open face) (cell3d out[M_OUTER]) */
+  domainDepth(x: number, y: number, z: number): number { return Math.min(-this.field(F_CELL, x, y, z), this.faceDist(z)); }
+  /** cell3d.crista_lumen: signed distance to the intracristal lumen (negative inside); b = boundary matrix SDF */
+  cristaLumen(x: number, y: number, z: number, b: number): number {
+    const F = this.F!, o = this.crOff, h = F[o + 4];
+    const ix = Math.floor((x - F[o + 1]) / h), iy = Math.floor((y - F[o + 2]) / h), iz = Math.floor((z - F[o + 3]) / h);
+    if (ix < 0 || iy < 0 || iz < 0 || ix >= F[o + 5] || iy >= F[o + 6] || iz >= F[o + 7]) return 1e9;
+    const B = F[o + 8], bx = Math.floor(ix / B), by = Math.floor(iy / B), bz = Math.floor(iz / B);
+    const slot = F[F[o + 13] + (bx * F[o + 10] + by) * F[o + 11] + bz];
+    if (slot < 0) return 1e9;
+    const k = F[F[o + 14] + slot * B * B * B + ((ix - bx * B) * B + (iy - by * B)) * B + (iz - bz * B)];
+    if (k < 0) return 1e9;
+    const q = F[o + 12] + 12 * k;
+    if (F[q + 11] === 0) return 1e9;
+    const S = F[q + 4], CR_W = F[o + 15], CR_GAP = F[o + 16], CR_JW = F[o + 17];
+    const t = F[q] * x + F[q + 1] * y + F[q + 2] * z - F[q + 3];
+    const u = t - S * Math.floor(t / S + 0.5);
+    const slab = Math.abs(u) - CR_W;
+    const lam = Math.max(slab, b + CR_GAP);
+    const w = Math.abs(F[q + 5] * (x - F[q + 8]) + F[q + 6] * (y - F[q + 9]) + F[q + 7] * (z - F[q + 10])) - CR_JW;
+    return Math.min(lam, Math.max(slab, w));
+  }
   /** cell3d.mem_sdfs: signed distance to each membrane (negative = lumenal / non-cytoplasmic side) */
   memSdfs(x: number, y: number, z: number): MemSdf {
     const PERI = this.c.PERI_W, IMS = this.c.IMS_W, rc = this.c.PORE_R + 0.5 * PERI;
@@ -99,7 +130,8 @@ export class Geometry {
     d[M_NE] = dne;
     const om = this.field(F_MITO, x, y, z);
     d[M_OM] = om;
-    const matrix = om + IMS;
+    let matrix = om + IMS;
+    if (this.crOff > 0 && matrix < this.F![this.crOff + 15]) matrix = Math.max(matrix, -this.cristaLumen(x, y, z, matrix));   // cristae
     d[M_IM] = -matrix;
     d[M_ER] = this.field(F_ER, x, y, z);
     d[M_GOLGI] = this.field(F_GOLGI, x, y, z);
@@ -109,11 +141,13 @@ export class Geometry {
   /** cell3d.label_from */
   labelFrom(x: number, y: number, z: number, m: MemSdf): number {
     const PERI = this.c.PERI_W, rc = this.c.PORE_R + 0.5 * PERI;
+    if (this.faceOn && z < this.zFace) return L_OUTV;          // outside the imaged EM volume (open face)
     if (m.d[M_PM] < 0) return L_EXT;
     if (m.d[M_NE] < 0) return L_PERI;
     const hp = m.hp;
     if (hp < -0.5 * PERI) {
       if (hp > -PERI - 8 && this.inPore(x, y, z, rc).k >= 0) return L_PORE;
+      if (nFields(this.F) > F_NUCLEOLUS && this.field(F_NUCLEOLUS, x, y, z) < 0) return L_NUCL;
       return L_NUCP;
     }
     if (hp < 0) return L_PORE;                               // pore channel between the midplane and the ONM

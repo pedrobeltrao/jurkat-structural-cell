@@ -1,14 +1,18 @@
 # Jurkat structural cell
 
 A molecule-by-molecule structural model of a whole human Jurkat T cell (cell 1 of the OpenOrganelle FIB-SEM volume
-`jrc_jurkat-1`). It holds about 960 million macromolecules (887 M packed plus 76 M pre-placed chromatin, polysome
+`jrc_jurkat-1`). It holds about 945 million macromolecules (870 M packed plus 75 M pre-placed chromatin, polysome
 and cytoskeleton units), each drawn from an experimental (PDB) or predicted (AlphaFold DB) structure. A WebGPU viewer streams the model into the browser at residue resolution.
 
 - **Viewer:** https://pedrobeltrao.github.io/jurkat-structural-cell/ (GitHub Pages, built from `jurkat/viewer/app`).
 - **Data:** https://huggingface.co/datasets/pedrobeltrao/jurkat-structural-cell-data. The site reads `web_full_v4/` (16.7 GB in
   2,365 files, none larger than 34 MB); the earlier v3 pack stays in `web_full_v3/` (open it with `?data=`).
-- **Status:** work in progress. The current data are **pack v4**: procedural cristae, inventory v4, no interaction-driven
-  attraction. See "Known limitations".
+- **Status:** work in progress. The newest pack is **v5** (encoded as `web_full_v5/`; the site switches to it once that
+  folder is uploaded and `DATA_BASE` is set, see `upload_data.md`). v5 adds: an open boundary where the EM volume
+  truncates the cell (no membrane on that face, shown as "edge of the EM data"), a nucleolus compartment, membrane-adjacent
+  shells for lipid-anchored proteins, the actin cortex and the nuclear lamina, TM proteins and complexes routed into their
+  membranes, and a free-diffusion nuclear pool for small proteins annotated in both nucleus and cytosol. The app reads
+  v4 and v5 data. See "Known limitations".
 
 ## What the model is
 
@@ -134,23 +138,27 @@ in `MODEL.md`. The order is:
 Please cite the original data sources when you use the model. The derived viewer data on Hugging Face inherit the
 attribution requirements of the CC BY sources above.
 
-## Known limitations (pack v4)
+## Known limitations (pack v5)
 
-- **Placement shortfalls.** 95.9% of the target mass was placed. Thin compartments jam with the current random
-  sequential packer: mitochondrial matrix 69.5% (between cristae), ER lumen 65.4%, NE 88%, endo-lysosomal membranes
-  87%. Cytosol, nucleoplasm, PM, ER membrane and inner mitochondrial membrane are at 98–99.7%.
-- **Truncated cell.** The EM volume cuts cell 1 at one face (about 3–4% of the cell missing). The model currently
-  puts a plasma membrane on that face; the next geometry revision makes it an open boundary ("edge of EM data").
+- **Placement shortfalls.** 95.6% of the target mass was placed. Crowded and thin compartments jam with the current
+  random sequential packer: mitochondrial matrix 70.6% (between cristae), ER lumen 66.3%, nucleolus 88% (capped at
+  110 mg/ml of protein; rRNA is not modelled), lamina shell 69%, Golgi cytosolic-face shell 35% (the procedural Golgi
+  has about a quarter of the real cisternal area), NE 88%, endo-lysosomal membranes 88%. Cytosol, nucleoplasm, PM,
+  cortex, ER membrane and inner mitochondrial membrane are at 98–99.6%.
+- **Truncated cell.** The EM volume cuts cell 1 at its bottom face (41 µm² footprint). That face is an open boundary:
+  no membrane, nothing placed beyond it. A side-wall extrapolation puts the missing cap at about 7 µm³ (1% of the
+  cell; a sphere-shaped cap would be 29 µm³, but the measured walls are much steeper), and copy numbers are scaled
+  to the modelled part (×0.990 for volumes, ×0.943 for plasma-membrane proteins).
 - **Cristae** are procedural (lamellae perpendicular to each mitochondrion's long axis, 70–100 nm apart), not
-  segmented. The viewer's cut-face colouring does not yet know them (crista lumens are coloured as matrix).
+  segmented.
 - **No interaction-driven organisation.** Placement is random within compartments and membranes, so the model can be
   compared with proximity data without circularity. Pre-built heterodimers (AFDB models selected by SEC co-elution
   or STRING) are placed as complexes.
-- **Viewer.** The whole-cell distance fields for the cut-face colours are resampled at 48 nm (32 nm for ER, Golgi and
-  endo-lysosomes), which agrees with the 16 nm geometry at 98.4% of points inside the cell. The per-tile membrane
-  meshes are 8 nm.
-- **GPU memory.** The whole-cell build needs a WebGPU storage-buffer binding of about 175 MB (library 158 MB, fields
-  173 MB). Desktop GPUs expose ≥ 1 GB; devices at the WebGPU minimum (128 MiB) get an error message.
+- **Viewer.** The whole-cell distance fields for the cut-face colours are resampled at 48 nm (cell, NE) and 32 nm
+  (mitochondria, ER, Golgi, endo-lysosomes, nucleolus), which agrees with the 16 nm geometry at 98.8% of points
+  inside the cell (cristae and nucleolus included). The per-tile membrane meshes are 8 nm.
+- **GPU memory.** The whole-cell build needs a WebGPU storage-buffer binding of about 205 MB (library about 160 MB, fields
+  205 MB). Desktop GPUs expose ≥ 1 GB; devices at the WebGPU minimum (128 MiB) get an error message.
 - **Browser support.** Needs WebGPU (recent Chrome or Edge on desktop). Tested on an Intel integrated GPU (Iris Xe,
   "Detail: medium"); other GPUs and Safari/Firefox are untested.
 

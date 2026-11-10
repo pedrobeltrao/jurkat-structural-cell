@@ -12,7 +12,13 @@ Steps (python jwc.py <step> [args]):
            within tile + halo and the instances of already packed neighbour tiles -> wc/tiles/<i>.npz
   summary  totals per region and placement fractions                         -> wc/summary.json
 Tiles of 500 nm (yeast: 200 nm) keep the per-tile collision grid < ~1 GB per worker (job memory cap 128 GB).
-Model frame = cell3d frame (nm, origin at the cell centre)."""
+Model frame = cell3d frame (nm, origin at the cell centre).
+v5: open face (cell3d G_FACE): membrane triangles below the face are dropped (measures and packing), so nothing is placed on
+it; cell copy numbers are scaled to the modelled part of the cell (summary open_face: f_pm for the PM and PM shells, f_vol
+for everything else; applied to the copies left after pre-pass consumption); cortical F-actin pre-pass filaments that run
+along the face (within FACE_ACTIN nm of it and > 150 nm, the cortex band depth, below the side-wall PM;
+the cell SDF is clamped at 160 nm inside) are dropped at indexing.
+Shell regions (jpack_test.SHELL_REG) are split over tiles by their membrane's area."""
 import os, sys, json, time
 os.environ.setdefault("NUMBA_THREADING_LAYER", "workqueue")   # fork-safe (OpenMP aborts after fork)
 import numpy as np, pandas as pd
@@ -27,15 +33,24 @@ W = f"{D}/wc"
 TILE = 500.0
 VOX = 4.0; MESH_H = 8.0; MEAS_H = 8.0
 HALO = 40.0
+FACE_ACTIN = 160.0
 NPROC = int(os.environ.get("JWC_NPROC", 24))
 import jpack_test as jp                                  # region definitions, mapping tables, area factors
 VOL_REG, MEM_REG, RNAMES, NV = jp.VOL_REG, jp.MEM_REG, jp.RNAMES, jp.NV
+NSH0 = jp.NSH0
 _S = {}
 
 
 def load_cell():
     z = np.load(f"{D}/jgeom_cell1.npz")
     return c3.Cell(z["G"], z["pores"]), json.loads(str(z["summary"]))
+
+
+def face_keep(tri, G):
+    """triangles (n, 9) whose centroid lies in the modelled domain (above the open face)"""
+    if G[c3.G_FACE] <= 0 or len(tri) == 0:
+        return tri
+    return tri[(tri[:, 2] + tri[:, 5] + tri[:, 8]) / 3.0 >= G[c3.G_ZFACE]]
 
 
 # ------------------------------------------------------------------ tiles + measures
@@ -55,7 +70,8 @@ def _measure(idx):
             s = S[..., mi]
             if s.min() < 0 < s.max():
                 v, f, _, _ = marching_cubes(s, 0.0, spacing=(MEAS_H,) * 3)
-                ar.append(float(0.5 * np.linalg.norm(np.cross(v[f[:, 1]] - v[f[:, 0]], v[f[:, 2]] - v[f[:, 0]]), axis=1).sum()))
+                tt = face_keep((v + lo)[f].reshape(-1, 9), cell.G)
+                ar.append(float(0.5 * np.linalg.norm(np.cross(tt[:, 3:6] - tt[:, 0:3], tt[:, 6:9] - tt[:, 0:3]), axis=1).sum()))
             else:
                 ar.append(0.0)
         out.append([i] + vol + ar)
@@ -120,6 +136,10 @@ def step_counts(seed=3):
     if c3.n_fields(cell.G) and cell.G[c3.G_CRISTAE] > 0:
         fac["MITO_IM"] = max(1.0, jp.CRISTAE_F * carea["MITO_OM"] / max(carea["MITO_IM"], 1.0))
     print("membrane area factors (inventory / modelled):", {k: round(v, 2) for k, v in fac.items()}, flush=True)
+    of = summ.get("open_face") if cell.G[c3.G_FACE] > 0 else None
+    f_vol, f_pm = (of["f_vol"], of["f_pm"]) if of else (1.0, 1.0)
+    pm_regs = {"PM"} | {s_[0] for s_ in jp.SHELL_REG if s_[1] == c3.M_PM}
+    print(f"open-face scaling of cell copy numbers: f_vol {f_vol}, f_pm {f_pm} (PM regions {sorted(pm_regs)})", flush=True)
     rng = np.random.default_rng(seed); rows = []
     tot = {}
     for li, r in I.iterrows():
@@ -132,8 +152,10 @@ def step_counts(seed=3):
                 reg = jp.SOL.get(comp, "cytosol")
                 if reg in ("ER_lumen", "golgi_lumen", "endo_lumen") and r.signal_frac < 0.5: reg = "cytosol"
                 share = 1.0
+            share *= f_pm if reg in pm_regs else f_vol
             tot[(li, RNAMES.index(reg))] = tot.get((li, RNAMES.index(reg)), 0.0) + r.copies * wt * share
-    col = {ri: (RNAMES[ri] if ri < NV else "mem_" + RNAMES[ri]) for ri in range(len(RNAMES))}
+    col = {ri: (RNAMES[ri] if ri < NV else "mem_" + RNAMES[ri] if ri < NSH0 else "mem_" + jp.SHELL_MEMNAME[RNAMES[ri]])
+           for ri in range(len(RNAMES))}
     pcache = {}
     for (li, ri), x in tot.items():
         n = int(x) + (rng.random() < x - int(x))
@@ -148,7 +170,7 @@ def step_counts(seed=3):
     C = np.concatenate(rows).astype(np.int64)
     C = C[np.lexsort((C[:, 1], C[:, 0]))]
     np.savez_compressed(f"{W}/counts.npz", tile=C[:, 0].astype(np.int32), lib=C[:, 1].astype(np.int32), region=C[:, 2].astype(np.int16), n=C[:, 3].astype(np.int32))
-    json.dump(dict(libs=list(I.ing_id), mass_da=I.mass_da.tolist(), consumed=consumed), open(f"{W}/libs.json", "w"))
+    json.dump(dict(libs=list(I.ing_id), mass_da=I.mass_da.tolist(), consumed=consumed, f_vol=f_vol, f_pm=f_pm), open(f"{W}/libs.json", "w"))
     print(f"counts: {len(C):,} (tile, lib, region) entries, {C[:, 3].sum():,} instances; per region:",
           {RNAMES[ri]: int(C[C[:, 2] == ri, 3].sum()) for ri in range(len(RNAMES))})
 
@@ -165,6 +187,15 @@ def step_index():
         T_.append(z["types"].astype(np.int32) + base); P_.append(z["pos"].astype(np.float32)); Q_.append(z["quat"].astype(np.float32))
         print("  ", f, len(z["types"]), flush=True)
     T_ = np.concatenate(T_); P_ = np.concatenate(P_); Q_ = np.concatenate(Q_)
+    cell, _ = load_cell()
+    if cell.G[c3.G_FACE] > 0:                               # cortical F-actin laid along the (former) face membrane
+        fa = np.array([l == "F_ACTB" for l in libs])[T_]
+        near = fa & (P_[:, 2] < cell.G[c3.G_ZFACE] + FACE_ACTIN)
+        if near.any():
+            dep = cell.mems(P_[near].astype(np.float64))[:, c3.M_PM]
+            drop = np.zeros(len(T_), bool); drop[np.nonzero(near)[0][dep > 150.0]] = True   # deeper than the 8-150 nm cortex band
+            print(f"open face: dropped {int(drop.sum()):,} cortical F-actin subunits along the face", flush=True)
+            T_, P_, Q_ = T_[~drop], P_[~drop], Q_[~drop]
     tij = np.floor((P_ - lo0) / TILE).astype(np.int64)
     tid = np.array([key.get(tuple(t), -1) for t in tij]) if len(tij) < 5_000_000 else _tile_ids(tij, M)
     keep = tid >= 0
@@ -234,7 +265,7 @@ def _pack_tile(ti):
     for name, mi in MEM_REG:
         s = S[..., mi]
         if s.min() < 0 < s.max():
-            v, fc, _, _ = marching_cubes(s, 0.0, spacing=(MESH_H,) * 3); tt = (v + lo)[fc].reshape(-1, 9)
+            v, fc, _, _ = marching_cubes(s, 0.0, spacing=(MESH_H,) * 3); tt = face_keep((v + lo)[fc].reshape(-1, 9), cell.G)
         else:
             tt = np.zeros((0, 9))
         TRI.append(tt); tri_off.append(tri_off[-1] + len(tt))
@@ -245,7 +276,8 @@ def _pack_tile(ti):
     a, b = _S["coff"][ti], _S["coff"][ti + 1]
     jl, jr, jn = _S["clib"][a:b].astype(np.int64), _S["creg"][a:b].astype(np.int64), _S["cn"][a:b].astype(np.int64)
     if len(jl):
-        o = np.lexsort((-_S["BR"][jl], -(jr >= NV).astype(int))); jl, jr, jn = jl[o], jr[o], jn[o]
+        cls = np.where(jr >= NSH0, 1, np.where(jr >= NV, 0, 2))           # membranes, then shells, then volumes
+        o = np.lexsort((-_S["BR"][jl], cls)); jl, jr, jn = jl[o], jr[o], jn[o]
     # obstacles: pre-pass instances in this tile + neighbours, and packed neighbour tiles
     OCs, ORs = [], []
     for j in [ti] + _neigh(t):
@@ -273,7 +305,7 @@ def _pack_tile(ti):
     res = p3.pack_tile(int(ti) * 7919 + 11, lo, TILE, HALO, cell.G, cell.pores, cell.pidx, cell.PT, cell.PQ, cell.PC,
                        _S["so"], _S["STC"], _S["STR"], _S["BR"], jp.regmask(), jl, jr, jn, NV, np.array(vox_off, np.int64), VOXP, VOX,
                        np.array(tri_off, np.int64), TRI, CUMA, OC, OR, 0, 1500.0, 0, 200, 25, cap_s, cap_e,
-                       e, np.zeros((0, 3)), e, e, np.zeros(0), e, np.zeros(7), _S["QF"], jp.regmem())
+                       e, np.zeros((0, 3)), e, e, np.zeros(0), e, np.zeros(7), _S["QF"], jp.regmem(), *jp.shell_arrays())
     types, pos, quat, placed, _, _, overflow, ns, ne, _ = res
     tmp_f = f"{W}/tiles/.{ti}.tmp.npz"
     np.savez(tmp_f, types=types.astype(np.int32), pos=pos, quat=quat, job_lib=jl.astype(np.int32), job_region=jr.astype(np.int16),

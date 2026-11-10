@@ -9,7 +9,10 @@ per field (origin xyz, spacing h, bricks along x/y/z, voxels per brick, clamp in
 index, offset of the brick data) and the index/data sections (jgeom_build.bricks; same encoding as yeast cellshape).
 
 Fields (F_*): cell (plasma-membrane midsurface), NE perinuclear midsurface (HMFF fit), mito outer membrane, ER, Golgi,
-endolysosomal. Derived: ONM/INM at +-PERI_W/2 around the NE midsurface; mito inner membrane IMS_W inside the outer one, plus
+endolysosomal, nucleolus (v5; EM nucleolus_seg inside the nucleus; label NUCL inside the nucleoplasm, no membrane).
+v5 open boundary: cell 1 is truncated by the EM volume's z = 0 face. When G[G_FACE] > 0 the mask fields were extruded
+below the face before the SDF was computed (no membrane on the face), and the model domain is clipped at z = G[G_ZFACE]:
+label OUTV below it, out[M_OUTER] = min(PM depth, z - z_face) so the face is a plain hard wall (not a membrane). Derived: ONM/INM at +-PERI_W/2 around the NE midsurface; mito inner membrane IMS_W inside the outer one, plus
 procedural lamellar cristae when G[G_CRISTAE] points to a cristae section (jcristae.py).
 
 Membrane SDF sign convention (as yeast): negative on the lumenal / non-cytoplasmic side, so the gradient points to the
@@ -18,9 +21,9 @@ import numpy as np
 import numba as nb
 
 # ----------------------------------------------------------------- labels / membranes
-EXT, CYTO, PERI, NUCP, NUCL, IMS, MATRIX, ERL, GOLGI, ENDO, PORE = range(11)
+EXT, CYTO, PERI, NUCP, NUCL, IMS, MATRIX, ERL, GOLGI, ENDO, PORE, OUTV = range(12)
 LABEL_NAMES = ["exterior", "cytosol", "perinuclear", "nucleoplasm", "nucleolus", "mito_IMS", "mito_matrix",
-               "ER_lumen", "golgi_lumen", "endolysosomal_lumen", "pore_channel"]
+               "ER_lumen", "golgi_lumen", "endolysosomal_lumen", "pore_channel", "outside_EM_volume"]
 M_PM, M_NE, M_ER, M_OM, M_IM, M_GOLGI, M_ENDO, M_OUTER = range(8)
 MEM_NAMES = ["PM", "NE", "ER", "MITO_OM", "MITO_IM", "GOLGI", "ENDO", "CELL_OUTER"]
 NMEM = 8
@@ -32,11 +35,13 @@ PERI_W = 34.0        # perinuclear space (ONM-INM midsurface distance)
 IMS_W = 8.0          # OM-IM midsurface distance
 G_N = 8
 G_CRISTAE = 1        # G[1]: offset of the cristae section (jcristae.py), 0 = no cristae (IM = boundary membrane only)
+G_FACE = 2           # G[2] > 0: open boundary (EM-volume truncation face) at z = G[G_ZFACE] (model nm); domain is z >= z_face
+G_ZFACE = 3
 CR_W = 10.0          # crista: half the IM midsurface separation across the intracristal lumen
 CR_GAP = 12.0        # lamellae end this far inside the inner boundary membrane (junction ribbons bridge the gap)
 CR_JW = 10.0         # junction ribbon half-width
-F_CELL, F_NE, F_MITO, F_ER, F_GOLGI, F_ENDO = range(6)
-FIELD_NAMES = ["cell", "ne_mid", "mito", "er", "golgi", "endo"]
+F_CELL, F_NE, F_MITO, F_ER, F_GOLGI, F_ENDO, F_NUCLEOLUS = range(7)
+FIELD_NAMES = ["cell", "ne_mid", "mito", "er", "golgi", "endo", "nucleolus"]
 
 
 # ----------------------------------------------------------------- numba evaluators
@@ -71,6 +76,14 @@ def field_sdf(px, py, pz, G, k):
     c11 = G[b + sy + 1] + (G[b + sx + sy + 1] - G[b + sy + 1]) * tx
     c0 = c00 + (c10 - c00) * ty; c1 = c01 + (c11 - c01) * ty
     return c0 + (c1 - c0) * tz
+
+
+@nb.njit(cache=True, fastmath=True)
+def face_dist(pz, G):
+    """height above the open (truncation) face; 1e9 when the geometry has no open face"""
+    if G[G_FACE] > 0.0:
+        return pz - G[G_ZFACE]
+    return 1e9
 
 
 @nb.njit(cache=True, fastmath=True)
@@ -124,7 +137,7 @@ def mem_sdfs(px, py, pz, G, pores, pidx, PT, PQ, PC, out):
     pidx/PT/PQ/PC are unused (kept for the yeast call signature)."""
     dep = outer_depth(px, py, pz, G)
     out[M_PM] = dep
-    out[M_OUTER] = dep
+    out[M_OUTER] = min(dep, face_dist(pz, G))          # domain depth: PM or the open face, whichever is nearer
     hp = field_sdf(px, py, pz, G, F_NE)                 # 0 at the perinuclear midsurface, negative toward nucleoplasm
     d = abs(hp) - 0.5 * PERI_W
     rc = PORE_R + 0.5 * PERI_W
@@ -151,6 +164,8 @@ def mem_sdfs(px, py, pz, G, pores, pidx, PT, PQ, PC, out):
 @nb.njit(cache=True, fastmath=True)
 def label_from(px, py, pz, G, pores, out, matrix):
     """Compartment label given precomputed membrane SDFs (out) and matrix SDF."""
+    if G[G_FACE] > 0.0 and pz < G[G_ZFACE]:
+        return OUTV
     if out[M_OUTER] < 0:
         return EXT
     if out[M_NE] < 0:
@@ -159,6 +174,8 @@ def label_from(px, py, pz, G, pores, out, matrix):
     if hp < -0.5 * PERI_W:
         if hp > -PERI_W - 8.0 and in_pore(px, py, pz, pores, PORE_R + 0.5 * PERI_W) >= 0:
             return PORE
+        if n_fields(G) > F_NUCLEOLUS and field_sdf(px, py, pz, G, F_NUCLEOLUS) < 0:
+            return NUCL
         return NUCP
     if hp < 0:                                           # pore channel between midplane and ONM
         return PORE
@@ -182,10 +199,12 @@ def label_of(px, py, pz, G, pores, pidx, PT, PQ, PC, out):
 @nb.njit(cache=True, fastmath=True)
 def min_mem_dist(out, skip):
     """smallest membrane clearance, corrected for each membrane's thickness: min_m(|d_m| - MEM_HALF[m]) + HALF,
-    so pack3d's tests 'min_mem_dist(...) < r + HALF' mean 'closer than r to the membrane surface'"""
+    so pack3d's tests 'min_mem_dist(...) < r + HALF' mean 'closer than r to the membrane surface'.
+    M_OUTER (= PM depth, or the open face where that is nearer) acts as a hard wall, except for PM proteins (skip = M_PM),
+    whose face clearance pack3d.check_membrane tests separately."""
     d = 1e9
     for m in range(NMEM):
-        if m != skip and m != M_OUTER:                   # M_OUTER duplicates M_PM here
+        if m != skip and not (m == M_OUTER and skip == M_PM):
             d = min(d, abs(out[m]) - MEM_HALF[m])
     return d + HALF
 

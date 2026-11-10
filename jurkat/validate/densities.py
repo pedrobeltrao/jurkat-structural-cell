@@ -12,8 +12,14 @@ from concurrent.futures import ProcessPoolExecutor
 
 V = (__import__("os").environ.get("VCELL_ROOT", ".") + ""); D = f"{V}/data/derived"; W = f"{D}/wc"
 OUT = f"{D}/validation"; AV = 6.022e23
-RN = ["cytosol", "nucleoplasm", "matrix", "ER_lumen", "golgi_lumen", "endo_lumen", "perinuclear",
-      "PM", "NE", "ER", "MITO_OM", "MITO_IM", "GOLGI", "ENDO"]
+import sys
+sys.path.insert(0, f"{V}/jurkat/yc/pipeline")
+import jpack_test as jp                                    # v5: region list incl. nucleolus and shells
+RN = list(jp.RNAMES); NV = jp.NV; NSH0 = jp.NSH0
+# shells contribute their mass to the volume region they occupy (exoplasmic PM shell: extracellular, not counted)
+SHELL_VOL = {"sh_PM_cyto": "cytosol", "sh_PM_cortex": "cytosol", "sh_NE_lamina": "nucleoplasm", "sh_NE_nuc": "nucleoplasm",
+             "sh_ER_cyto": "cytosol", "sh_ER_lumen": "ER_lumen", "sh_GOLGI_cyto": "cytosol", "sh_GOLGI_lumen": "golgi_lumen",
+             "sh_ENDO_cyto": "cytosol", "sh_ENDO_lumen": "endo_lumen", "sh_OM_cyto": "cytosol"}
 
 
 def tile_mass(files):
@@ -27,10 +33,12 @@ def tile_mass(files):
 def main():
     os.makedirs(OUT, exist_ok=True)
     fs = sorted(glob.glob(f"{W}/tiles/*.npz"))
-    with ProcessPoolExecutor(16) as ex:
+    with ProcessPoolExecutor(8) as ex:
         packed = sum(ex.map(tile_mass, [fs[i::64] for i in range(64)]))
     M = pd.read_parquet(f"{W}/tiles.parquet")
-    vol = {r: float(M[r].sum()) / 1e9 for r in RN[:7]}                    # um3
+    vol = {r: float(M[r].sum()) / 1e9 for r in RN[:NV]}                   # um3
+    for k in range(NSH0, len(RN)):
+        if RN[k] in SHELL_VOL: packed[RN.index(SHELL_VOL[RN[k]])] += packed[k]
     # pre-pass mass by library
     PL = json.load(open(f"{W}/prepass_libs.json")); pt = np.load(f"{W}/prepass_types.npy")
     cnt = np.bincount(pt, minlength=len(PL))
@@ -41,16 +49,19 @@ def main():
         pre["nucleoplasm" if (l == "NUCLEOSOME" or l.startswith("H1-")) else "cytosol"] += c * m
     mr = np.load(f"{D}/prepass/mrna_cell1.npz", mmap_mode="r"); nt = float(np.asarray(mr["nt"]).sum())
     rows = []
-    for i, r in enumerate(RN[:7]):
+    for i, r in enumerate(RN[:NV]):
         if vol[r] <= 0: continue
         prot = packed[i]; extra = pre.get(r, 0.0) + (nt * 330.0 if r == "cytosol" else 0.0)
         rows.append(dict(region=r, volume_um3=round(vol[r], 1), packed_pg=round(prot / AV * 1e12, 2), prepass_pg=round(extra / AV * 1e12, 2),
                          mg_per_ml=round((prot + extra) / AV / (vol[r] * 1e-12) * 1e3, 1), packed_only_mg_per_ml=round(prot / AV / (vol[r] * 1e-12) * 1e3, 1)))
     T = pd.DataFrame(rows); print(T.to_string(index=False))
-    c, n = T.set_index("region").loc["cytosol", "mg_per_ml"], T.set_index("region").loc["nucleoplasm", "mg_per_ml"]
+    Ti = T.set_index("region"); c = Ti.loc["cytosol", "mg_per_ml"]
+    nm = ["nucleoplasm"] + (["nucleolus"] if "nucleolus" in Ti.index else [])            # whole nucleus (nucleoplasm + nucleolus)
+    n = float((Ti.loc[nm, "packed_pg"] + Ti.loc[nm, "prepass_pg"]).sum() / Ti.loc[nm, "volume_um3"].sum() * 1e3)
     print(f"nucleus / cytosol density ratio {n / c:.2f}; membrane-protein mass (pg): " +
-          ", ".join(f"{RN[i]} {packed[i] / AV * 1e12:.2f}" for i in range(7, 14)))
-    json.dump(dict(rows=rows, nuc_cyto_ratio=round(n / c, 3), mem_pg={RN[i]: round(packed[i] / AV * 1e12, 3) for i in range(7, 14)},
+          ", ".join(f"{RN[i]} {packed[i] / AV * 1e12:.2f}" for i in range(NV, NSH0)))
+    json.dump(dict(rows=rows, nuc_cyto_ratio=round(n / c, 3), mem_pg={RN[i]: round(packed[i] / AV * 1e12, 3) for i in range(NV, NSH0)},
+                   shell_pg={RN[i]: round(packed[i] / AV * 1e12, 3) for i in range(NSH0, len(RN))},
                    mrna_pg=round(nt * 330 / AV * 1e12, 2)), open(f"{OUT}/densities.json", "w"), indent=1)
 
 

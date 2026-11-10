@@ -25,8 +25,12 @@ YCT1 tile binary as jenc.py / webenc.py) without ever holding the cell in memory
   GPU at 16 B per bead: fine on desktop GPUs, which expose >= 1 GB storage bindings, but above the WebGPU minimum of
   128 MiB). Since the renderer keeps the library resident, residue detail of every type is available anywhere in the
   cell without per-region library shards (types occur cell-wide, so shards would mostly duplicate it).
-* Distance fields (cut-face fill) are resampled from 16 nm to --field-sp (default 48 nm) for the whole cell; the
-  per-tile membrane meshes (8 nm) carry the fine membrane detail.
+* Distance fields (cut-face fill) are resampled from 16 nm for the whole cell: cell and ne_mid at --field-sp (48 nm),
+  mito, ER, Golgi, endo and nucleolus at --field-sp-thin (32 nm); the cristae section of cell3d (lamella parameters +
+  48 nm id grid) is appended as it is; the per-tile membrane meshes (8 nm) carry the fine membrane detail.
+* Model v5: tile job_region numbering = jpack_test.RNAMES (--regions v5), mapped to viewer region ids by
+  jenc.region_map (v4 ids 0-17 kept, nucleolus 18, shells 19-30); the open face (cell3d G_FACE/G_ZFACE) is exported in
+  geometry.json 'face', and membrane meshes are clipped there (jenc.clip_mesh).
 * Resumable: each block writes its shard then a small JSON record in OUT_work/; finished blocks are skipped on rerun.
 
 usage: jenc_full.py --tiles DIR --libs libs.json --meta tiles_meta.json --parquet tiles.parquet --geom jgeom.npz
@@ -94,13 +98,15 @@ def _eval_field(P, G, k):
     return out
 
 
-def web_fields_whole(cell, out, sp=48.0, sp_thin=32.0, B=4):
+def web_fields_whole(cell, out, sp=48.0, sp_thin=32.0, B=4, sp_of=None):
     """jenc.web_fields layout for the whole cell, resampled at sp nm (bricks of B voxels, (B+1)^3 nodes each); the
-    fields of thin compartments (ER, Golgi, endo-lysosomal: sheets and vesicles of 30-100 nm) at sp_thin nm"""
-    G = cell.G; heads, n_index, n_data, parts = [], [], [], []
-    off = 1 + 12 * len(J.BANDS); n1 = B + 1
-    for k, (bin_, bout) in enumerate(J.BANDS):
-        sp_k = sp_thin if c3.FIELD_NAMES[k] in ("er", "golgi", "endo") else sp
+    fields of thin compartments (ER, Golgi, endo-lysosomal: sheets and vesicles of 30-100 nm) at sp_thin nm; sp_of
+    overrides the spacing per field name (default: nucleolus at sp_thin, so the small nucleoli are kept). The cristae
+    section (cell3d.crista_lumen parameters + id grid) is appended as it is (no resampling)."""
+    G = cell.G; items = []; n1 = B + 1; sp_of = dict(sp_of or {})
+    for k, (bin_, bout) in enumerate(J.BANDS[:J.n_fields_of(G)]):
+        nm = c3.FIELD_NAMES[k]
+        sp_k = sp_of.get(nm, sp_thin if nm in ("mito", "er", "golgi", "endo", "nucleolus") else sp)
         g = np.arange(n1) * sp_k; node = np.stack(np.meshgrid(g, g, g, indexing="ij"), -1).reshape(-1, 3)
         o = c3.G_N + 1 + 12 * k; h = G[o:o + 12]
         org, sp0, nb0, B0 = h[0:3], h[3], h[4:7].astype(int), int(h[7])
@@ -117,14 +123,22 @@ def web_fields_whole(cell, out, sp=48.0, sp_thin=32.0, B=4):
                 elif mn[j] >= bout: idx[c0 + j] = -2
                 else: idx[c0 + j] = len(keep); keep.append(np.clip(vals[j], -bin_, bout))
         dat = np.round(np.concatenate(keep) / J.FIELD_Q).astype(np.int16) if keep else np.zeros(0, np.int16)
-        heads.append([float(x) for x in org] + [float(sp_k), float(nbc[0]), float(nbc[1]), float(nbc[2]), float(B), bin_, bout,
-                                                float(off), float(off + len(idx))])
-        off += len(idx) + len(dat); n_index.append(int(len(idx))); n_data.append(int(len(dat)))
-        parts += [idx.astype("<i4").tobytes(), dat.astype("<i2").tobytes() + b"\0" * ((-2 * len(dat)) % 4)]
-        log(f"field {c3.FIELD_NAMES[k]}: {len(keep):,} of {len(idx):,} bricks stored at {sp_k:.0f} nm")
-    open(f"{out}/geometry_fields.bin", "wb").write(b"".join(parts))
-    return dict(file="geometry_fields.bin", names=c3.FIELD_NAMES, head=heads, n_index=n_index, n_data=n_data, q=J.FIELD_Q,
-                layout="as jenc.py web_fields (whole cell, resampled at %g nm; er, golgi, endo at %g nm)" % (sp, sp_thin))
+        items.append(([float(x) for x in org] + [float(sp_k), float(nbc[0]), float(nbc[1]), float(nbc[2]), float(B), bin_, bout], idx, dat))
+        log(f"field {nm}: {len(keep):,} of {len(idx):,} bricks stored at {sp_k:.0f} nm")
+    cr = J.cristae_section(G)
+    if cr is not None: log(f"cristae: {cr['n']} mitochondria, {len(cr['dat'])} of {len(cr['idx'])} id bricks stored")
+    fd = J.write_fields_bin(out, items, cr)
+    fd["layout"] = f"as jenc.py web_fields (whole cell, resampled at {sp:g} nm; er, golgi, endo, nucleolus at {sp_thin:g} nm" + \
+        (f"; overrides {sp_of}" if sp_of else "") + "). " + fd["layout"]
+    return fd
+
+
+def geometry_json(cell, out, fields, cube_nm):
+    return dict(kind="jurkat_fields", whole_cell=True, centre_nm=[0.0, 0.0, 0.0], cube_nm=cube_nm, R=float(cell.G[0]),
+                fields=fields, pores=cell.pores.round(4).ravel().tolist(),
+                consts=dict(PERI_W=c3.PERI_W, IMS_W=c3.IMS_W, PORE_R=c3.PORE_R, HALF=c3.HALF),
+                face=J.face_json(cell), label_names=c3.LABEL_NAMES, mem_names=J.MEM_NAMES, region_names=J.REGION_NAMES,
+                label_rule=J.LABEL_RULE)
 
 
 # ------------------------------------------------------------------ mRNA pieces of one slab
@@ -162,7 +176,7 @@ def load_slab(bx):
         if os.path.exists(f):
             z = np.load(f); pos = z["pos"]; k = (pos[:, 0] >= x0) & (pos[:, 0] < x1)
             if k.any():
-                reg = np.repeat(z["job_region"], z["job_placed"]).astype(np.int8)
+                reg = S["rmap"][np.repeat(z["job_region"], z["job_placed"])].astype(np.int8)
                 T.append(S["vt_of"][z["types"][k]]); P.append(pos[k]); Q.append(z["quat"][k]); R.append(reg[k])
         p0, p1 = S["poff"][ti], S["poff"][ti + 1]
         if p1 > p0:
@@ -231,7 +245,7 @@ def tile_mesh(cell, lo):
             v, fc, _, _ = marching_cubes(s, 0.0, spacing=(J.MESH_H,) * 3)
             Vs.append(v + lo); Fs.append(fc + nv); FM.append(np.full(len(fc), mi, np.uint8)); nv += len(v)
     if not Vs: return np.zeros((0, 3)), np.zeros((0, 3), np.int64), np.zeros(0, np.uint8)
-    return np.concatenate(Vs), np.concatenate(Fs), np.concatenate(FM)
+    return J.clip_mesh(np.concatenate(Vs), np.concatenate(Fs), np.concatenate(FM), S.get("zf"))   # no membrane below the open face
 
 
 def proxies(vt, P, R, key, K):
@@ -335,7 +349,11 @@ def main():
     ap.add_argument("--bead-budget", type=int, default=1 << 24,
                     help="max library beads; above it the largest assemblies get coarser beads (8e6 fits a 128 MiB binding)")
     ap.add_argument("--field-sp", type=float, default=48.0)
-    ap.add_argument("--field-sp-thin", type=float, default=32.0, help="spacing of the ER, Golgi and endo fields")
+    ap.add_argument("--field-sp-thin", type=float, default=32.0, help="spacing of the ER, Golgi, endo and nucleolus fields")
+    ap.add_argument("--field-sp-of", nargs="*", default=[], metavar="NAME=NM",
+                    help="per-field spacing overrides, e.g. ne_mid=32 mito=32 (field names as cell3d.FIELD_NAMES)")
+    ap.add_argument("--regions", default="v5", choices=["v4", "v5"],
+                    help="job_region numbering of the packing tiles: v5 = jpack_test.RNAMES (default), v4 = jenc.RNAMES")
     ap.add_argument("--fields-only", action="store_true", help="only rewrite geometry_fields.bin and geometry.json 'fields'")
     ap.add_argument("--only-slab", type=int, nargs="*"); ap.add_argument("--only-block", type=int, nargs=3)
     ap.add_argument("--bookmark-centre", type=float, nargs=3, default=[200.0, -3000.0, -1400.0],
@@ -347,10 +365,18 @@ def main():
     for d in (out, f"{out}/tiles", f"{out}/overview", f"{out}/library", work): os.makedirs(d, exist_ok=True)
     T0 = time.time()
     z = np.load(a.geom); cell = c3.Cell(z["G"], z["pores"]); del z
-    R_cell = float(cell.G[0]); log(f"geometry {a.geom}: R {R_cell:.0f} nm, {len(cell.pores)} pores")
+    R_cell = float(cell.G[0]); zf = J.face_z(cell)
+    log(f"geometry {a.geom}: R {R_cell:.0f} nm, {len(cell.pores)} pores, {J.n_fields_of(cell.G)} fields "
+        f"({', '.join(c3.FIELD_NAMES[:J.n_fields_of(cell.G)])}), cristae {'yes' if J.cristae_section(cell.G) is not None else 'no'}, "
+        f"open face {'z = %.0f nm' % zf if zf is not None else 'no'}")
+    sp_of = {kv.split("=")[0]: float(kv.split("=")[1]) for kv in a.field_sp_of}
+    assert all(k in c3.FIELD_NAMES for k in sp_of), sp_of
+    rmap = J.region_map(J.pack_rnames(a.regions))
+    log(f"pack regions ({a.regions}) -> viewer region ids: {dict(zip(J.pack_rnames(a.regions), rmap.tolist()))}")
     if a.fields_only:
-        gj = json.load(open(f"{out}/geometry.json"))
-        gj["fields"] = web_fields_whole(cell, out, sp=a.field_sp, sp_thin=a.field_sp_thin)
+        cube = (json.load(open(f"{out}/geometry.json"))["cube_nm"] if os.path.exists(f"{out}/geometry.json")
+                else 2 * math.ceil(R_cell / VT) * VT)
+        gj = geometry_json(cell, out, web_fields_whole(cell, out, sp=a.field_sp, sp_thin=a.field_sp_thin, sp_of=sp_of), cube)
         json.dump(gj, open(f"{out}/geometry.json", "w"), separators=(",", ":"))
         sp = split_large(out); write_version(out)
         if os.path.exists(f"{out}/encode_meta.json"):
@@ -379,7 +405,8 @@ def main():
     for j, n in enumerate(PL): cnt[pre_glob[j], pre_reg[j]] += pc[j]
     with mp.get_context("fork").Pool(a.workers) as pool:
         for jl, jr, jp in pool.imap_unordered(_jobs, [f"{a.tiles}/{ti}.npz" for ti in range(len(tij))], chunksize=32):
-            np.add.at(cnt, (jl, jr), jp)
+            assert len(jr) == 0 or jr.max() < len(rmap), f"job_region {jr.max()} outside the {a.regions} region list"
+            np.add.at(cnt, (jl, rmap[jr]), jp)
     tot = cnt.sum(1); present = np.flatnonzero(tot > 0)
     vt_of = np.full(len(names), -1, np.int32); vt_of[present] = np.arange(len(present))
     ids = [names[i] for i in present]; NT = len(ids)
@@ -406,21 +433,16 @@ def main():
     if not a.skip_static:
         assert lib is not None
         write_library(a, out, ids, lib, stride, cnt[present], BR, MASS)
-        geo_fields = web_fields_whole(cell, out, sp=a.field_sp, sp_thin=a.field_sp_thin)
+        geo_fields = web_fields_whole(cell, out, sp=a.field_sp, sp_thin=a.field_sp_thin, sp_of=sp_of)
         half = math.ceil(max(np.abs(lo0).max(), R_cell) / VT) * VT
-        json.dump(dict(kind="jurkat_fields", whole_cell=True, centre_nm=[0.0, 0.0, 0.0], cube_nm=2 * half, R=R_cell,
-                       fields=geo_fields, pores=cell.pores.round(4).ravel().tolist(),
-                       consts=dict(PERI_W=c3.PERI_W, IMS_W=c3.IMS_W, PORE_R=c3.PORE_R, HALF=c3.HALF),
-                       label_names=c3.LABEL_NAMES, mem_names=J.MEM_NAMES,
-                       label_rule="cell3d.label_from (no cristae: geometry before jcristae)"),
-                  open(f"{out}/geometry.json", "w"), separators=(",", ":"))
+        json.dump(geometry_json(cell, out, geo_fields, 2 * half), open(f"{out}/geometry.json", "w"), separators=(",", ":"))
         J.organelle_meshes(cell, np.zeros(3), out)
     lib = None
     # ---- blocks that meet the cell (so membrane-only blocks are encoded too): cell label at 100 nm samples per block
     g = np.arange(lo0[0], -lo0[0], 100.0) + 50
     Xg = np.stack(np.meshgrid(g, g, g, indexing="ij"), -1).reshape(-1, 3)
     labs = np.concatenate([cell.labels(Xg[i:i + 2_000_000]) for i in range(0, len(Xg), 2_000_000)])
-    inside = Xg[labs != c3.EXT]
+    inside = Xg[(labs != c3.EXT) & (labs != c3.OUTV)]                # (OUTV: below the open face, v5)
     cell_blocks = np.unique(np.floor(inside / BLK).astype(np.int64), axis=0)
     log(f"{len(cell_blocks)} blocks meet the cell")
     # ---- shared state for the fork pool (pre-pass and mRNA in RAM: random reads on Lustre are slow)
@@ -430,7 +452,7 @@ def main():
     st = mr_off[:-1][nz]
     mr_xmin[nz] = np.minimum.reduceat(mr_pts[:, 0], st); mr_xmax[nz] = np.maximum.reduceat(mr_pts[:, 0], st)
     log(f"mRNA: {nthr:,} threads, {len(mr_pts):,} points")
-    S.update(cell=cell, tij=tij, lo0=lo0, PT=PT, tiles=a.tiles, vt_of=vt_of, pre_glob=pre_glob, pre_reg=pre_reg,
+    S.update(cell=cell, zf=zf, rmap=rmap, tij=tij, lo0=lo0, PT=PT, tiles=a.tiles, vt_of=vt_of, pre_glob=pre_glob, pre_reg=pre_reg,
              poff=poff, ptypes=ptypes, ppos=np.load(f"{a.prepass}/prepass_pos.npy"), pquat=np.load(f"{a.prepass}/prepass_quat.npy"),
              mr_off=mr_off, mr_pts=mr_pts, mr_xmin=mr_xmin, mr_xmax=mr_xmax, br=BR, env=ENV, mass=MASS, K=a.proxies,
              out=out, work=work, cell_blocks=[tuple(map(int, b)) for b in cell_blocks],
@@ -450,6 +472,34 @@ def main():
     if a.only_block or a.only_slab:
         log("partial run: index not assembled"); return
     assemble(a, out, work, NT, half_from_geo(out), time.time() - T0, int(tot.sum()), coarsened, cell)
+
+
+def extra_bookmarks(cell, step=150.0):
+    """v5 views: the largest nucleolus (section through its deepest point) and the open face (vertical section showing the
+    flat bottom where the EM volume truncates the cell)"""
+    bm = []
+    if J.n_fields_of(cell.G) > c3.F_NUCLEOLUS:
+        R = float(cell.G[0]); g = np.arange(-R, R, step) + step / 2
+        best = None
+        for x in g:                                          # plane by plane (bounded memory)
+            Y, Z = np.meshgrid(g, g, indexing="ij"); P = np.c_[np.full(Y.size, x), Y.ravel(), Z.ravel()]
+            lab = cell.labels(P); k = np.flatnonzero(lab == c3.NUCL)
+            if not len(k): continue
+            d = np.array([c3.field_sdf(*P[i], cell.G, c3.F_NUCLEOLUS) for i in k]); j = int(np.argmin(d))
+            if best is None or d[j] < best[0]: best = (float(d[j]), P[k[j]])
+        if best is not None:
+            w = float(np.clip(-best[0] * 6, 600, 3000))
+            bm.append(dict(name="Nucleolus", caption="Nucleolus: a dense compartment of the nucleoplasm without a membrane "
+                           "(from the EM nucleolus segmentation), where ribosomes are assembled.",
+                           target=[round(float(v), 3) for v in best[1]], normal=[0, 0, 1], up=[0, 1, 0], width=w, slab=60))
+    zf = J.face_z(cell)
+    if zf is not None:
+        bm.append(dict(name="Edge of the EM data", caption="The flat bottom of the cell is the edge of the imaged EM volume, "
+                       "not a cell surface: the cell continues below it (about 3-4% of its volume was not imaged). "
+                       "There is no membrane on this face.",
+                       target=[0.0, 0.0, round(zf + 2500.0, 3)], normal=[0, 1, 0], up=[0, 0, 1],
+                       width=round(1.2 * float(cell.G[0]), 1), slab=60))
+    return bm
 
 
 def half_from_geo(out):
@@ -539,6 +589,7 @@ def assemble(a, out, work, NT, half, dt_total, n_total, coarsened, cell):
     log(f"index: {len(rows):,} tiles in {len(blocks)} blocks; {own:,} instances encoded of {n_total:,}")
     json.dump(dict(tile_nm=VT, q_org=J.Q_ORG, q_range=J.Q_RANGE, mrna_q=MR_Q, link_q=0.01, label_names=c3.LABEL_NAMES,
                    region_names=J.REGION_NAMES, mem_names=J.MEM_NAMES, label_columns=c3.LABEL_NAMES, whole_cell=True,
+                   pack_regions=dict(scheme=a.regions, names=J.pack_rnames(a.regions), viewer_id=J.region_map(J.pack_rnames(a.regions)).tolist()),
                    shard=dict(block_tiles=NB, path="tiles/s_{bx}_{by}_{bz}.bin",
                               note="tile = gzip member at bytes [off, off + gz_bytes) of the shard of block floor(i / block_tiles)"),
                    overview=dict(path="overview/{bx}_{by}_{bz}.bin.gz", block_nm=BLK,
@@ -567,6 +618,7 @@ def assemble(a, out, work, NT, half, dt_total, n_total, coarsened, cell):
     bm[0].update(target=[0.0, 0.0, 0.0], normal=[0, 0, 1], up=[0, 1, 0], name="Whole cell", caption=f"Section through the whole Jurkat T cell model ({n_total / 1e6:.0f} million macromolecules). "
                  "Molecules stream in around the view centre; further out, stand-in spheres and compartment colours.",
                  width=2 * float(cell.G[0]) * 0.75, slab=60)
+    bm += extra_bookmarks(cell)
     json.dump(bm, open(f"{out}/bookmarks.json", "w"), indent=1)
     sp = split_large(out)
     write_version(out)
@@ -577,7 +629,8 @@ def assemble(a, out, work, NT, half, dt_total, n_total, coarsened, cell):
                 geom=os.path.relpath(a.geom, V), n_instances=n_total, n_encoded=own, n_types=NT, tiles=len(rows),
                 blocks=len(blocks), files=len(files), total_gb=round(float(sizes.sum()) / 1e9, 2),
                 largest=[os.path.relpath(big, out), int(sizes.max())], split=sp, coarsened=coarsened,
-                proxies_per_tile=a.proxies, field_sp_nm=a.field_sp, field_sp_thin_nm=a.field_sp_thin, encode_s=round(dt_total))
+                proxies_per_tile=a.proxies, field_sp_nm=a.field_sp, field_sp_thin_nm=a.field_sp_thin,
+                field_sp_of=a.field_sp_of, regions=a.regions, encode_s=round(dt_total))
     json.dump(meta, open(f"{out}/encode_meta.json", "w"), indent=1)
     log(f"done: {meta['files']} files, {meta['total_gb']} GB, largest {meta['largest']}")
 

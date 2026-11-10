@@ -230,3 +230,53 @@ reached"). Each tile uploaded all its instances although a 40–60 nm slab shows
   - Without a cut (camera at 40 µm), the plasma-membrane shell loads to the budget (1,257 tiles, 7.5 M) and the HUD
     reports the budget.
   - Cube mode loads all 128 tiles in view as before.
+
+## Model v5 (2026-11-09): nucleolus, open face, cristae, v5 regions
+
+Backups of every changed file: `*.bak_v4`.
+
+- **Region ids** (`jenc.REGION_NAMES`, `data.ts REGION_NAMES`, `check_data.py`). Pack v5 numbers its regions as
+  `jpack_test.RNAMES` (8 volumes incl. nucleolus, 7 membranes, 12 shells). The viewer keeps its v4 ids 0-17 unchanged
+  (volumes 0-6, membranes 7-13, pre-pass 14-17) and appends 18 nucleolus and 19-30 the shells (31 ids, fit the 5-bit
+  region field of instances and overview stand-ins). `jenc.region_map` maps the tile `job_region` to viewer ids
+  (`--regions v5`, the default; `--regions v4` for older packs); index.json records it as `pack_regions`. v4 data stay
+  decodable (they never use ids >= 18), and `animInst`'s membrane range 7..13 is unchanged; shell proteins are not in
+  the bilayer and move like soluble ones. The UI lists only the regions present in the library; a new class switch
+  "Anchored, cortex, lamina" toggles the shells. `regionMask` widened to 32 bits.
+- **Fields** (`jenc.write_fields_bin`, `jenc_full.web_fields_whole`, `fields.ts loadFields`). The 7th field
+  (nucleolus) is exported with band (40, 40). Whole cell: cell and ne_mid at 48 nm; mito, ER, Golgi, endo and nucleolus
+  at 32 nm (`--field-sp-thin`; `--field-sp-of name=nm` overrides; mito went from 48 to 32 nm for the cristae: crista
+  lumens 97.8 -> 99.2% labelled IMS, matrix 98.0 -> 99.3%, for +13 MB on the GPU).
+  - **Bug fix: offsets into F are now multiples of 16.** The app holds the fields in a Float32Array and reads each
+    field's index/data offsets from it; odd offsets above 2^25 were rounded (v4: Golgi index 36,021,519 and data
+    37,196,091), shifting the Golgi field by one word, so only 67% of points inside the Golgi read as Golgi lumen in
+    the v4 app (now 98.9%). The file is still the sections back to back; geometry.json `fields.total` gives the length
+    of F, and the loaders place each section at its offset.
+  - **Cristae section** (`jenc.cristae_section`): cell3d's per-mitochondrion lamella parameters (86 x 12 float32) and
+    the 48 nm id grid in bricks of 4^3 cells (16.7 k of 216 k bricks stored, int16; 2.1 MB file, 4.4 MB GPU), after
+    the fields; `geometry.json fields.cristae` gives its layout. `loadFields` appends a 32-word header to F (offset
+    `F.crOff`, geo.G[5] for the shader).
+  - **Open face**: geometry.json `face` = {on, z}; geo.G[3] = on, geo.G[4] = z (uniform `Geo.G0.w`, `G1.x`).
+- **Label rule** (`geometry.ts`, `shaders.ts FILL`, `check_data.py Geo`): exact ports of v5 `cell3d.label_from`:
+  `outside_EM_volume` (label 11) below the face, nucleolus (label 4) inside the nucleoplasm branch when field 6 < 0,
+  and `crista_lumen` (matrix = max(om + IMS_W, -lumen) where om + IMS_W < CR_W).
+- **Rendering the face**: label 11 is not filled (exterior colour, so nothing beyond the data); on cut faces a grey
+  line (palette 92, at least 4 nm and about 2 px wide at any zoom) marks where the section meets the face; the exterior sphere trace runs on the domain depth
+  min(PM depth, z - z_face), so the flat face appears as a flat grey surface (id 0x10B, picked as "Edge of the EM
+  data"); the legend and About text say "flat face: edge of the EM data". Section map: label 11 transparent.
+- **Meshes**: per-tile membrane meshes and the whole-cell organelle meshes drop triangles whose centroid is below the
+  face (`jenc.clip_mesh`; the v5 mask fields were extruded below the face, so the PM and organelle surfaces continue
+  there). Procedural lipids are generated on the tile mesh triangles (`worker.ts genDetail`), so they follow.
+- **Colours**: nucleolus region 18 `#8A4F9E` (deep violet), nucleolus fill 84 `#D6B9DE` (darker than nucleoplasm),
+  shells 19-30 shades of their membrane's colour (cortex tan `#D9A26B`, lamina `#6A4C9C`), face 92 `#8D939C`.
+- **Bookmarks** (`jenc_full.extra_bookmarks`): "Nucleolus" (section through the deepest nucleolar point) and "Edge of
+  the EM data" (vertical section showing the flat bottom).
+- **Tests**: WGSL validated by naga (wgpu-native) for every shader; the FILL `labelOf` compiled with a compute entry
+  point and run on the GPU agrees 100% with `Geometry.label` run in Node on the same data (fetched over HTTP through
+  `data.fetchBin`, split files, `loadFields`, `prepareGeometry`); `fsFill` rendered offscreen with wgpu (edge-of-data
+  section, the flat face seen from below, cristae, nucleolus) looks as intended. Agreement with cell3d on the v5
+  geometry (`check_data.py DATA --fields-only --ref`; 20,000 random points plus 2,000 per rare label): 99.62% of random
+  points, 98.81% of those inside the cell; per label: cytosol 99.5%, nucleoplasm 99.4%, nucleolus 99.4%, matrix 99.4%,
+  IMS 98.3% (crista lumens 99.4% IMS), Golgi 98.9%, endo 94.0%, ER lumen 84.8%, pore channel 71%, perinuclear 56%
+  (34 nm wide at a 48 nm field; `--field-sp-of ne_mid=32` gives about 70% for +13 MB), outside_EM_volume 100%.
+  Membrane triangles of tiles at the face: none below it. GPU size of the v5 fields: 51.2 M words = 205 MB (v4 173 MB).

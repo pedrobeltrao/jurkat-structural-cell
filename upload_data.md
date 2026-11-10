@@ -84,3 +84,11 @@ Variables, and re-run the workflow. No code change is needed.
 Encode v4 into a new folder, for example `data/derived/web_full_v4`. Upload it as `web_full_v4/` next to v3, then
 change `DATA_BASE`. Old links keep working with `?data=…/web_full_v3/`. Each build has its own `version.json`, so
 browsers never mix cached files from two builds.
+
+## Updating to pack v5
+
+Encode v5 into `data/derived/web_full_v5` (done on the cluster, see PLANNING_NOTES §7g "v5"). Upload it as
+`web_full_v5/` next to v4, then set `DATA_BASE` to `…/resolve/main/web_full_v5/` and re-run the Pages workflow. The
+v5 app also reads v4 data, so old links keep working with `?data=…/web_full_v4/`. The v5 build fixes a field-offset
+bug that mislabelled part of the Golgi in the v4 cut faces; re-encoding only the fields of v4 (`jenc_full.py
+--fields-only`) would fix the old data too.

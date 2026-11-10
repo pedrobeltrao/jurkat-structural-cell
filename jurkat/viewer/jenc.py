@@ -27,10 +27,53 @@ BEAD_Q = 0.005; MESH_H = 8.0; FIELD_Q = 0.01
 RNAMES = ["cytosol", "nucleoplasm", "matrix", "ER_lumen", "golgi_lumen", "endo_lumen", "perinuclear",
           "mem_PM", "mem_NE", "mem_ER", "mem_MITO_OM", "mem_MITO_IM", "mem_GOLGI", "mem_ENDO"]
 PRE_REG = ["chromatin", "polysome_ribosome", "cytoskeleton", "NPC"]
-REGION_NAMES = RNAMES + PRE_REG
+# v5 (jpack_test.RNAMES: + nucleolus volume region and 12 membrane-associated shells) appended AFTER the v4 ids, so viewer
+# region ids 0-17 keep their v4 meaning (v4 data stay decodable; membrane-embedded = 7..13 as before) and 18-30 are new.
+# 31 ids <= 32: fits the 5-bit region field of the instance word and of the overview stand-in word (w = 7 | region << 4 | ...).
+V5_EXTRA = ["nucleolus", "sh_PM_cyto", "sh_PM_exo", "sh_PM_cortex", "sh_NE_lamina", "sh_NE_nuc", "sh_ER_cyto", "sh_ER_lumen",
+            "sh_GOLGI_cyto", "sh_GOLGI_lumen", "sh_ENDO_cyto", "sh_ENDO_lumen", "sh_OM_cyto"]
+REGION_NAMES = RNAMES + PRE_REG + V5_EXTRA
+assert len(REGION_NAMES) <= 32
+V4_PACK_RNAMES = RNAMES                                        # job_region numbering of packs v1-v4
+
+
+def region_map(pack_rnames):
+    """viewer region id of each pack region index (tile job_region): names as jpack_test.RNAMES (v5: 'PM', 'NE', ... for
+    membranes, mapped to 'mem_PM' ...) or the v4 list above (identity)"""
+    m = []
+    for n in pack_rnames:
+        v = n if n in REGION_NAMES else f"mem_{n}"
+        assert v in REGION_NAMES, f"pack region {n} has no viewer region id"
+        m.append(REGION_NAMES.index(v))
+    return np.array(m, np.int64)
+
+
+def pack_rnames(which):
+    """pack region list: 'v4' (jenc.RNAMES) or 'v5'/'current' (jpack_test.RNAMES of the pipeline)"""
+    if which == "v4": return list(V4_PACK_RNAMES)
+    import jpack_test
+    return list(jpack_test.RNAMES)
+
+
+def face_z(cell):
+    """z (model nm) of the open boundary (EM-volume truncation face, cell3d v5), or None"""
+    G = cell.G
+    return float(G[c3.G_ZFACE]) if G.shape[0] > c3.G_FACE and G[c3.G_FACE] > 0 else None
+
+
+def clip_mesh(V_, F_, FM_, zf):
+    """drop triangles whose centroid lies below the open face (z < zf; no membrane outside the imaged volume) and the
+    vertices no triangle uses any more; V_ in the frame where the face is at z = zf"""
+    if zf is None or not len(F_): return V_, F_, FM_
+    keep = V_[F_].mean(1)[:, 2] >= zf
+    F_, FM_ = F_[keep], FM_[keep]
+    used = np.zeros(len(V_), bool); used[F_.ravel()] = True
+    remap = np.cumsum(used) - 1
+    return V_[used], remap[F_].astype(F_.dtype), FM_
 MEMS = [c3.M_PM, c3.M_NE, c3.M_ER, c3.M_OM, c3.M_IM, c3.M_GOLGI, c3.M_ENDO]      # face_mem = index in this list
 MEM_NAMES = ["PM", "NE", "ER", "MITO_OM", "MITO_IM", "GOLGI", "ENDO"]
-BANDS = [(180.0, 40.0), (100.0, 100.0), (40.0, 40.0), (40.0, 40.0), (40.0, 40.0), (40.0, 40.0)]   # per field (in, out) nm
+BANDS = [(180.0, 40.0), (100.0, 100.0), (40.0, 40.0), (40.0, 40.0), (40.0, 40.0), (40.0, 40.0), (40.0, 40.0)]   # per field (in, out) nm
+AL = 16                         # F offsets (geometry.json heads) are multiples of AL: float32 represents them exactly up to 2^28
 
 
 def log(*a):
@@ -122,7 +165,7 @@ def choose_centre(cell, cube, step=400.0):
     R = cell.G[0]; g = np.arange(-R, R + 1, step)
     C = np.stack(np.meshgrid(g, g, g, indexing="ij"), -1).reshape(-1, 3)
     m = cell.mems(C); lab = cell.labels(C)
-    C = C[(lab != c3.EXT) & (m[:, c3.M_PM] < 0.45 * cube) & (np.abs(m[:, c3.M_NE]) < 0.45 * cube)]
+    C = C[(lab != c3.EXT) & (lab != c3.OUTV) & (m[:, c3.M_PM] < 0.45 * cube) & (np.abs(m[:, c3.M_NE]) < 0.45 * cube)]
     want = [c3.CYTO, c3.NUCP, c3.MATRIX, c3.ERL, c3.EXT]
     s = (np.arange(16) + 0.5) / 16 * cube - cube / 2
     S = np.stack(np.meshgrid(s, s, s, indexing="ij"), -1).reshape(-1, 3)
@@ -157,21 +200,78 @@ def crop_field(G, k, lo, hi, band):
     return [float(x) for x in org2], float(sp), snb.tolist(), B, new.ravel(), dat, float(h[8]), float(h[9])
 
 
+def n_fields_of(G):
+    return int(G[c3.G_N]) if G.shape[0] > c3.G_N else 0
+
+
+def _al(x):
+    return -(-int(x) // AL) * AL
+
+
+def cristae_section(G, C=np.zeros(3), Bc=4):
+    """the cristae section of G (cell3d.crista_lumen; jcristae.py) for the viewer, shifted by -C: per-mitochondrion
+    parameters (n x 12: axis xyz, phase, spacing S, junction direction xyz, centroid xyz, enabled) and the dense 48 nm
+    id grid stored in bricks of Bc^3 cells (index -1 = brick without any mitochondrion id, else slot; slot data = ids,
+    -1 = none). None when G has no cristae."""
+    if G.shape[0] <= c3.G_CRISTAE or G[c3.G_CRISTAE] <= 0: return None
+    o = int(G[c3.G_CRISTAE]); n = int(G[o]); org = G[o + 1:o + 4] - C; h = float(G[o + 4]); dims = G[o + 5:o + 8].astype(int)
+    par = G[o + 8:o + 8 + 12 * n].reshape(n, 12).copy()
+    ids = G[o + 8 + 12 * n:o + 8 + 12 * n + int(np.prod(dims))].reshape(dims)
+    par[:, 3] -= par[:, 0:3] @ C; par[:, 8:11] -= C                 # t = a.(p' + C) - phase = a.p' - (phase - a.C)
+    nb = -(-dims // Bc); pad = np.full(nb * Bc, -1.0); pad[:dims[0], :dims[1], :dims[2]] = ids
+    bl = pad.reshape(nb[0], Bc, nb[1], Bc, nb[2], Bc).transpose(0, 2, 4, 1, 3, 5).reshape(-1, Bc ** 3)
+    full = (bl >= 0).any(1); idx = np.full(len(bl), -1, np.int64); idx[full] = np.arange(full.sum())
+    return dict(n=n, origin=[float(x) for x in org], h=h, dims=dims.tolist(), B=Bc, nb=nb.tolist(),
+                par=par.astype(np.float32), idx=idx, dat=bl[full].astype(np.int16),
+                consts=dict(CR_W=c3.CR_W, CR_GAP=c3.CR_GAP, CR_JW=c3.CR_JW))
+
+
+def write_fields_bin(out, items, cr):
+    """geometry_fields.bin + the geometry.json 'fields' dict. items: per field (head[:10] = origin xyz, spacing, nbx, nby,
+    nbz, B, clamp_in, clamp_out; int brick index; int16 node data in FIELD_Q). Offsets into the app's Float32Array F are
+    rounded up to multiples of AL (exact in float32: v4 builds had odd offsets > 2^25, e.g. the Golgi index, which F
+    shifted by one word). The cristae section (cristae_section) follows the fields."""
+    n = len(items); off = _al(1 + 12 * n); heads, n_index, n_data, parts = [], [], [], []
+    for h10, idx, dat in items:
+        io = off; off = _al(off + len(idx)); do = off; off = _al(off + len(dat))
+        heads.append([float(x) for x in h10] + [float(io), float(do)])
+        n_index.append(int(len(idx))); n_data.append(int(len(dat)))
+        parts += [idx.astype("<i4").tobytes(), dat.astype("<i2").tobytes() + b"\0" * ((-2 * len(dat)) % 4)]
+    fd = dict(file="geometry_fields.bin", names=c3.FIELD_NAMES[:n], head=heads, n_index=n_index, n_data=n_data, q=FIELD_Q,
+              layout="per field: int32 brick index (nbx*nby*nbz, x-major; -1 inside, -2 outside, else brick id), then int16 node "
+                     "values ((B+1)^3 per brick, x-major) in q nm, padded to 4 bytes; head = origin xyz, spacing, nbx, nby, nbz, B, "
+                     "clamp_in, clamp_out, idx_off, data_off (word offsets of the index and data in the app's Float32Array F, "
+                     "multiples of 16; the file itself is the sections back to back). Then the optional cristae section: "
+                     "float32 params (n x 12), int32 brick index, int16 ids (padded), placed at cristae.off_par/off_idx/off_dat of F.")
+    if cr is not None:
+        po = off; off = _al(off + cr["par"].size); xo = off; off = _al(off + len(cr["idx"])); do = off; off = _al(off + cr["dat"].size)
+        parts += [cr["par"].astype("<f4").tobytes(), cr["idx"].astype("<i4").tobytes(),
+                  cr["dat"].astype("<i2").tobytes() + b"\0" * ((-2 * cr["dat"].size) % 4)]
+        fd["cristae"] = dict(n=cr["n"], origin=cr["origin"], h=cr["h"], dims=cr["dims"], B=cr["B"], nb=cr["nb"],
+                             n_par=int(cr["par"].size), n_index=int(len(cr["idx"])), n_data=int(cr["dat"].size),
+                             off_par=po, off_idx=xo, off_dat=do, consts=cr["consts"],
+                             rule="cell3d.crista_lumen: params p = F[off_par + 12 k ..]; cell c = floor((x - origin) / h); brick b = c // B; "
+                                  "slot = F[off_idx + (bx nby + by) nbz + bz]; id k = F[off_dat + slot B^3 + (lx B + ly) B + lz]")
+    fd["total"] = int(off)
+    open(f"{out}/geometry_fields.bin", "wb").write(b"".join(parts))
+    return fd
+
+
+def face_json(cell, C=np.zeros(3)):
+    zf = face_z(cell)
+    return dict(on=zf is not None, z=(zf - float(C[2])) if zf is not None else 0.0,
+                note="open boundary: cell 1 is truncated by the EM volume's z = 0 face; below z the label is outside_EM_volume, "
+                     "no membrane on the face (cell3d v5 G_FACE / G_ZFACE)")
+
+
 def web_fields(cell, C, cube, out):
     lo, hi = C - cube / 2 - 200, C + cube / 2 + 200
-    heads, n_index, n_data, parts = [], [], [], []
-    off = 1 + 12 * len(BANDS)
-    for k, band in enumerate(BANDS):
+    items = []
+    for k, band in enumerate(BANDS[:n_fields_of(cell.G)]):
         org, sp, nb, B, idx, dat, cin, cout = crop_field(cell.G, k, lo, hi, band)
         org = [org[i] - C[i] for i in range(3)]
-        heads.append(org + [sp, float(nb[0]), float(nb[1]), float(nb[2]), float(B), band[0], band[1], float(off), float(off + len(idx))])
-        off += len(idx) + len(dat); n_index.append(int(len(idx))); n_data.append(int(len(dat)))
-        parts += [idx.astype("<i4").tobytes(), dat.astype("<i2").tobytes() + b"\0" * ((-2 * len(dat)) % 4)]
-    open(f"{out}/geometry_fields.bin", "wb").write(b"".join(parts))
-    return dict(file="geometry_fields.bin", names=c3.FIELD_NAMES, head=heads, n_index=n_index, n_data=n_data, q=FIELD_Q,
-                layout="per field: int32 brick index (nbx*nby*nbz, x-major; -1 inside, -2 outside, else brick id), then int16 node "
-                       "values ((B+1)^3 per brick, x-major) in q nm; head = origin xyz, spacing, nbx, nby, nbz, B, clamp_in, clamp_out, idx_off, data_off "
-                       "(offsets in 4-byte words from the file start only for the index; data follows the index of the same field)")
+        items.append((org + [sp, float(nb[0]), float(nb[1]), float(nb[2]), float(B), band[0], band[1]], idx, dat))
+    return write_fields_bin(out, items, cristae_section(cell.G, C))
 
 
 # ------------------------------------------------------------------ main
@@ -181,9 +281,11 @@ def main():
     ap.add_argument("--centre", type=float, nargs=3)
     ap.add_argument("--tiles", default=f"{W}/tiles")
     ap.add_argument("--out", default=f"{V}/jurkat/viewer/web/data")
+    ap.add_argument("--regions", default="v5", choices=["v4", "v5"], help="job_region numbering of the packing tiles")
     a = ap.parse_args()
     out = a.out; shutil.rmtree(out, ignore_errors=True); os.makedirs(f"{out}/tiles"); os.makedirs(f"{out}/library")
     z = np.load(f"{D}/jgeom_cell1.npz"); cell = c3.Cell(z["G"], z["pores"])
+    rmap = region_map(pack_rnames(a.regions)); zf = face_z(cell)
     C = np.array(a.centre) if a.centre else choose_centre(cell, a.cube)
     C = np.round(C / VT) * VT                                 # cube faces on viewer tile boundaries
     half = a.cube / 2; clo, chi = C - half, C + half
@@ -201,7 +303,7 @@ def main():
     for ti in sel:
         f = f"{a.tiles}/{ti}.npz"
         if os.path.exists(f):
-            t = np.load(f); reg = np.repeat(t["job_region"], t["job_placed"]).astype(np.int64)
+            t = np.load(f); reg = rmap[np.repeat(t["job_region"], t["job_placed"]).astype(np.int64)]
             k = np.all((t["pos"] >= clo) & (t["pos"] < chi), axis=1)
             T.append(t["types"][k].astype(np.int64)); P.append(t["pos"][k].astype(np.float64)); Q.append(t["quat"][k].astype(np.float64)); R.append(reg[k])
         p0, p1 = poff[ti], poff[ti + 1]
@@ -273,6 +375,7 @@ def main():
                 Vs.append(v + lo); Fs.append(fc + nv); FM.append(np.full(len(fc), mi, np.uint8)); nv += len(v)
         Vm = np.concatenate(Vs) if Vs else np.zeros((0, 3)); Fm = np.concatenate(Fs) if Fs else np.zeros((0, 3), np.int64)
         FMm = np.concatenate(FM) if FM else np.zeros(0, np.uint8)
+        Vm, Fm, FMm = clip_mesh(Vm, Fm, FMm, None if zf is None else zf - C[2])
         vbytes = pad4(quant_pos(Vm, lo).astype("<u2").tobytes()) if len(Vm) else b""
         big = len(Vm) > 65535
         fbytes = pad4(Fm.astype("<u4" if big else "<u2").tobytes()) if len(Fm) else b""
@@ -331,8 +434,8 @@ def main():
     pores = cell.pores.copy(); pores[:, :3] -= C
     json.dump(dict(kind="jurkat_fields", centre_nm=C.tolist(), cube_nm=a.cube, R=float(cell.G[0]), fields=fields,
                    pores=pores.round(4).ravel().tolist(), consts=dict(PERI_W=c3.PERI_W, IMS_W=c3.IMS_W, PORE_R=c3.PORE_R, HALF=c3.HALF),
-                   label_names=lab_names, mem_names=MEM_NAMES,
-                   label_rule="cell3d.label_from: exterior if -field(cell) < 0; NE/pores from field(ne_mid); then mito, ER, golgi, endo; else cytosol"), open(f"{out}/geometry.json", "w"), separators=(",", ":"))
+                   face=face_json(cell, C), label_names=lab_names, mem_names=MEM_NAMES, region_names=REGION_NAMES,
+                   label_rule=LABEL_RULE), open(f"{out}/geometry.json", "w"), separators=(",", ":"))
     organelle_meshes(cell, C, out)
     bookmarks(cell, C, a.cube, out, len(T))
     json.dump(dict(v=time.strftime("%Y%m%d%H%M%S")), open(f"{out}/version.json", "w"))
@@ -341,8 +444,13 @@ def main():
     log("done", out)
 
 
+LABEL_RULE = ("cell3d.label_from (v5): outside_EM_volume below the open face (face.z); exterior if -field(cell) < 0; perinuclear if "
+              "|field(ne_mid)| < PERI_W/2 (pore torus); nucleoplasm side: pore channel, nucleolus if field(nucleolus) < 0, else "
+              "nucleoplasm; mito: matrix if max(mito + IMS_W, -crista_lumen) < 0 else IMS; then ER, golgi, endo; else cytosol")
+
+
 def organelle_meshes(cell, C, out, h=64.0):
-    """whole-cell membrane meshes at h nm (context in the overview), shifted by -C"""
+    """whole-cell membrane meshes at h nm (context in the overview), shifted by -C; clipped at the open face"""
     R = cell.G[0]; g = np.arange(-R, R + h, h)
     X = np.stack(np.meshgrid(g, g, g, indexing="ij"), -1).reshape(-1, 3)
     S = np.empty((len(X), c3.NMEM), np.float32)
@@ -353,7 +461,9 @@ def organelle_meshes(cell, C, out, h=64.0):
         s = S[..., m] if m != c3.M_NE else np.minimum(S[..., m], 1e3)
         if not (s.min() < 0 < s.max()): continue
         v, fc, _, _ = marching_cubes(s, 0.0, spacing=(h,) * 3)
-        res.append((mi, (v - R - C).astype("<f4"), fc.astype("<u4")))
+        v, fc, _ = clip_mesh(v - R, fc, np.zeros(len(fc), np.uint8), face_z(cell))
+        if not len(fc): continue
+        res.append((mi, (v - C).astype("<f4"), fc.astype("<u4")))
     with gzip.open(f"{out}/organelle_meshes.bin.gz", "wb", compresslevel=6) as f:
         hdr = np.zeros(1 + 3 * len(res), np.uint32); hdr[0] = len(res)
         for i, (m, V_, F_) in enumerate(res): hdr[1 + 3 * i:4 + 3 * i] = [m, len(V_), len(F_)]

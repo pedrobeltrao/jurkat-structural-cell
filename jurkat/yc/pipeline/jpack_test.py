@@ -26,16 +26,53 @@ USE_PREPASS = len(_A) > 3 and _A[3] == 'prepass'
 VOX = 4.0; MESH_H = 8.0
 GOLGI_STACK_F = 4.5   # Golgi cisternal membrane area / smooth 16 nm blob area (cisternae ~25 nm thick: S/V ~80 um-1)
 CRISTAE_F = 3.0   # total IM area / OM area (cristae not built yet: only the inner-boundary share of IM proteins is packed)
-VOL_REG = [("cytosol", (c3.CYTO,)), ("nucleoplasm", (c3.NUCP, c3.NUCL)), ("matrix", (c3.MATRIX,)), ("ER_lumen", (c3.ERL,)),
-           ("golgi_lumen", (c3.GOLGI,)), ("endo_lumen", (c3.ENDO,)), ("perinuclear", (c3.PERI,))]
+VOL_REG = [("cytosol", (c3.CYTO,)), ("nucleoplasm", (c3.NUCP,)), ("matrix", (c3.MATRIX,)), ("ER_lumen", (c3.ERL,)),
+           ("golgi_lumen", (c3.GOLGI,)), ("endo_lumen", (c3.ENDO,)), ("perinuclear", (c3.PERI,)), ("nucleolus", (c3.NUCL,))]
 MEM_REG = [("PM", c3.M_PM), ("NE", c3.M_NE), ("ER", c3.M_ER), ("MITO_OM", c3.M_OM), ("MITO_IM", c3.M_IM), ("GOLGI", c3.M_GOLGI), ("ENDO", c3.M_ENDO)]
+# v5 shells: (name, membrane, allowed labels, side (+1 = cytoplasmic/nucleoplasmic side of the cell3d SDF), d0, d1 nm from the
+# membrane midsurface, rad: add the library's bounding radius to d1). Anchored proteins: centre within BR + 2 nm of the bilayer
+# surface (d1 = 2 + MEM_HALF); cortex 0-150 nm under the PM; lamina 0-25 nm from the INM surface on the nucleoplasmic side.
+_AH = lambda m: 2.0 + float(c3.MEM_HALF[m])
+SHELL_REG = [("sh_PM_cyto", c3.M_PM, (c3.CYTO,), 1.0, 0.0, _AH(c3.M_PM), 1),
+             ("sh_PM_exo", c3.M_PM, (c3.EXT,), -1.0, 0.0, _AH(c3.M_PM), 1),
+             ("sh_PM_cortex", c3.M_PM, (c3.CYTO,), 1.0, 0.0, 150.0, 0),
+             ("sh_NE_lamina", c3.M_NE, (c3.NUCP,), 1.0, 0.0, 25.0 + float(c3.MEM_HALF[c3.M_NE]), 0),
+             ("sh_NE_nuc", c3.M_NE, (c3.NUCP,), 1.0, 0.0, _AH(c3.M_NE), 1),
+             ("sh_ER_cyto", c3.M_ER, (c3.CYTO,), 1.0, 0.0, _AH(c3.M_ER), 1),
+             ("sh_ER_lumen", c3.M_ER, (c3.ERL,), -1.0, 0.0, _AH(c3.M_ER), 1),
+             ("sh_GOLGI_cyto", c3.M_GOLGI, (c3.CYTO,), 1.0, 0.0, _AH(c3.M_GOLGI), 1),
+             ("sh_GOLGI_lumen", c3.M_GOLGI, (c3.GOLGI,), -1.0, 0.0, _AH(c3.M_GOLGI), 1),
+             ("sh_ENDO_cyto", c3.M_ENDO, (c3.CYTO,), 1.0, 0.0, _AH(c3.M_ENDO), 1),
+             ("sh_ENDO_lumen", c3.M_ENDO, (c3.ENDO,), -1.0, 0.0, _AH(c3.M_ENDO), 1),
+             ("sh_OM_cyto", c3.M_OM, (c3.CYTO,), 1.0, 0.0, _AH(c3.M_OM), 1)]
 NV = len(VOL_REG)
+NSH0 = NV + len(MEM_REG)                                  # first shell region index
 SOL = {"cytosol": "cytosol", "cytoskeleton": "cytosol", "peroxisome": "cytosol", "lipid_droplet": "cytosol", "unassigned": "cytosol",
        "plasma_membrane": "cytosol", "nucleus": "nucleoplasm", "nuclear_envelope": "nucleoplasm", "mitochondrion": "matrix",
-       "er": "ER_lumen", "secreted": "ER_lumen", "golgi": "golgi_lumen", "endolysosomal": "endo_lumen"}
+       "er": "ER_lumen", "secreted": "ER_lumen", "golgi": "golgi_lumen", "endolysosomal": "endo_lumen",
+       # v5 compartment keys (jinventory_v5.py)
+       "nucleolus": "nucleolus", "pm_anchor_cyto": "sh_PM_cyto", "pm_anchor_exo": "sh_PM_exo", "cortex": "sh_PM_cortex",
+       "lamina": "sh_NE_lamina", "ne_anchor_nuc": "sh_NE_nuc", "er_anchor_cyto": "sh_ER_cyto", "er_anchor_lumen": "sh_ER_lumen",
+       "golgi_anchor_cyto": "sh_GOLGI_cyto", "golgi_anchor_lumen": "sh_GOLGI_lumen", "endo_anchor_cyto": "sh_ENDO_cyto",
+       "endo_anchor_lumen": "sh_ENDO_lumen", "om_anchor_cyto": "sh_OM_cyto"}
 TMR = {"plasma_membrane": "PM", "nucleus": "NE", "nuclear_envelope": "NE", "mitochondrion": "MITO_IM", "er": "ER", "golgi": "GOLGI",
-       "endolysosomal": "ENDO", "cytosol": "ER", "cytoskeleton": "ER", "peroxisome": "ER", "lipid_droplet": "ER", "unassigned": "ER", "secreted": "ER"}
-RNAMES = [r[0] for r in VOL_REG] + [m[0] for m in MEM_REG]
+       "endolysosomal": "ENDO", "cytosol": "ER", "cytoskeleton": "ER", "peroxisome": "ER", "lipid_droplet": "ER", "unassigned": "ER", "secreted": "ER",
+       "nucleolus": "NE", "pm_anchor_cyto": "PM", "pm_anchor_exo": "PM", "cortex": "PM", "lamina": "NE", "ne_anchor_nuc": "NE",
+       "er_anchor_cyto": "ER", "er_anchor_lumen": "ER", "golgi_anchor_cyto": "GOLGI", "golgi_anchor_lumen": "GOLGI",
+       "endo_anchor_cyto": "ENDO", "endo_anchor_lumen": "ENDO", "om_anchor_cyto": "MITO_IM"}
+RNAMES = [r[0] for r in VOL_REG] + [m[0] for m in MEM_REG] + [s_[0] for s_ in SHELL_REG]
+SHELL_MEMNAME = {s_[0]: [m[0] for m in MEM_REG][s_[1]] for s_ in SHELL_REG}   # shell -> membrane region (tile measure mem_<name>)
+
+
+def shell_arrays():
+    """pack3d.pack_tile shell arguments: n_shell0, SH_MEM, SH_MASK, SH_SIGN, SH_D0, SH_D1, SH_RAD"""
+    msk = []
+    for s_ in SHELL_REG:
+        m = 0
+        for l in s_[2]: m |= 1 << l
+        msk.append(m)
+    return (NSH0, np.array([s_[1] for s_ in SHELL_REG], np.int64), np.array(msk, np.int64), np.array([s_[3] for s_ in SHELL_REG]),
+            np.array([s_[4] for s_ in SHELL_REG]), np.array([s_[5] for s_ in SHELL_REG]), np.array([s_[6] for s_ in SHELL_REG], np.int64))
 LUMEN_MEM = {"ER_lumen": c3.M_ER, "golgi_lumen": c3.M_GOLGI, "perinuclear": c3.M_NE}   # thin lumens: orientation follows the membrane
 if os.environ.get("JWC_MATRIX_THIN", "1") != "0":
     LUMEN_MEM["matrix"] = c3.M_IM   # v4: matrix slabs between cristae are thin too (more tries, IM-aligned half the time)
@@ -70,7 +107,7 @@ def regmask():
         m = 0
         for l in labs: m |= 1 << l
         out.append(m)
-    return np.array(out + [0] * len(MEM_REG), np.int64)
+    return np.array(out + [0] * (len(MEM_REG) + len(SHELL_REG)), np.int64)
 
 
 def cell_measures(cell, summ, n=3_000_000, seed=0):
@@ -160,7 +197,10 @@ def main():
             else:
                 reg = SOL.get(comp, "cytosol")
                 if reg in ("ER_lumen", "golgi_lumen", "endo_lumen") and r.signal_frac < 0.5: reg = "cytosol"   # no signal peptide: cytosolic face
-                frac = bvol[reg] / cvol[reg] if cvol[reg] > 0 else 0.0
+                if reg in SHELL_MEMNAME:
+                    mr = SHELL_MEMNAME[reg]; frac = barea[mr] / carea[mr] if carea[mr] > 0 else 0.0
+                else:
+                    frac = bvol[reg] / cvol[reg] if cvol[reg] > 0 else 0.0
             x = r.copies * wt * frac
             k = int(x) + (rng.random() < x - int(x))
             if k > 0:
@@ -177,7 +217,7 @@ def main():
         C.append(cc); Rr.append(rr); st_off.append(st_off[-1] + len(rr)); BR.append(float((np.linalg.norm(cc, axis=1) + rr).max()))
     st_off = np.array(st_off, np.int64); STC = np.concatenate(C); STR = np.concatenate(Rr); BR = np.array(BR)
     J = pd.DataFrame([(remap[li], ri, n_) for (li, ri), n_ in jobs.items()], columns=["lib", "region", "n"])
-    J["br"] = BR[J.lib]; J["mem"] = J.region >= NV
+    J["br"] = BR[J.lib]; J["mem"] = (J.region >= NV) & (J.region < NSH0)
     J = J.sort_values(["mem", "br"], ascending=[False, False])
     jl, jr, jn = (J[c].values.astype(np.int64) for c in ("lib", "region", "n"))
     OC, OR = np.zeros((0, 3)), np.zeros(0); pre_mass = {}
@@ -206,7 +246,7 @@ def main():
     res = p3.pack_tile(SEED, lo, BLOCK, 0.0, cell.G, cell.pores, cell.pidx, cell.PT, cell.PQ, cell.PC, st_off, STC, STR, BR, regmask(),
                        jl, jr, jn, NV, np.array(vox_off, np.int64), VOXP, VOX, np.array(tri_off, np.int64), TRI, CUMA,
                        OC, OR, 0, 1500.0, 0, 200, 25, cap_s, cap_e,
-                       e, np.zeros((0, 3)), e, e, np.zeros(0), e, np.zeros(7), qflat(st_off, STC, STR), regmem())
+                       e, np.zeros((0, 3)), e, e, np.zeros(0), e, np.zeros(7), qflat(st_off, STC, STR), regmem(), *shell_arrays())
     types, pos, quat, placed, _, _, overflow, ns, ne, _ = res
     dt = time.time() - t1
     J["placed"] = placed; J["ing"] = [lp_ids[used[l]] for l in J.lib]; J["mass_da"] = I.mass_da.values[[used[l] for l in J.lib]]
