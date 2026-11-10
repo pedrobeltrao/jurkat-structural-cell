@@ -18,7 +18,11 @@ it; cell copy numbers are scaled to the modelled part of the cell (summary open_
 for everything else; applied to the copies left after pre-pass consumption); cortical F-actin pre-pass filaments that run
 along the face (within FACE_ACTIN nm of it and > 150 nm, the cortex band depth, below the side-wall PM;
 the cell SDF is clamped at 160 nm inside) are dropped at indexing.
-Shell regions (jpack_test.SHELL_REG) are split over tiles by their membrane's area."""
+Shell regions (jpack_test.SHELL_REG) are split over tiles by their membrane's area.
+v6: nuclear speckles (cell3d SPK, jspeckles.py) are a volume region; chromatin pre-pass instances (nucleosomes, H1) whose
+centre lies inside a speckle are dropped at indexing (interchromatin space). Shells of a membrane with an area factor
+(Golgi: GOLGI_STACK_F, cisternae not built) are packed at the modelled share, as its TM proteins (JWC_GOLGI_SHELL_FULL=1
+restores v5). The NPC-proximal shell sh_NPC is split over tiles by NE area."""
 import os, sys, json, time
 os.environ.setdefault("NUMBA_THREADING_LAYER", "workqueue")   # fork-safe (OpenMP aborts after fork)
 import numpy as np, pandas as pd
@@ -35,6 +39,7 @@ VOX = 4.0; MESH_H = 8.0; MEAS_H = 8.0
 HALO = 40.0
 FACE_ACTIN = 160.0
 NPROC = int(os.environ.get("JWC_NPROC", 24))
+GOLGI_SHELL_FULL = os.environ.get("JWC_GOLGI_SHELL_FULL", "0") == "1"   # 1 = v5 behaviour (no area factor on shells)
 import jpack_test as jp                                  # region definitions, mapping tables, area factors
 VOL_REG, MEM_REG, RNAMES, NV = jp.VOL_REG, jp.MEM_REG, jp.RNAMES, jp.NV
 NSH0 = jp.NSH0
@@ -151,7 +156,9 @@ def step_counts(seed=3):
             else:
                 reg = jp.SOL.get(comp, "cytosol")
                 if reg in ("ER_lumen", "golgi_lumen", "endo_lumen") and r.signal_frac < 0.5: reg = "cytosol"
-                share = 1.0
+                share = 1.0 / fac.get(jp.SHELL_MEMNAME.get(reg), 1.0) if not GOLGI_SHELL_FULL else 1.0
+                # v6: shells of a membrane with an area factor (Golgi cisternae not built) are packed at the modelled share,
+                # as the TM proteins of that membrane (v5 packed them at full copies on the 1/4.5 blob: 35% placed)
             share *= f_pm if reg in pm_regs else f_vol
             tot[(li, RNAMES.index(reg))] = tot.get((li, RNAMES.index(reg)), 0.0) + r.copies * wt * share
     col = {ri: (RNAMES[ri] if ri < NV else "mem_" + RNAMES[ri] if ri < NSH0 else "mem_" + jp.SHELL_MEMNAME[RNAMES[ri]])
@@ -196,6 +203,14 @@ def step_index():
             drop = np.zeros(len(T_), bool); drop[np.nonzero(near)[0][dep > 150.0]] = True   # deeper than the 8-150 nm cortex band
             print(f"open face: dropped {int(drop.sum()):,} cortical F-actin subunits along the face", flush=True)
             T_, P_, Q_ = T_[~drop], P_[~drop], Q_[~drop]
+    if cell.G[c3.G_SPECKLE] > 0:                            # v6: speckles are interchromatin space
+        isch = np.array([l == "NUCLEOSOME" or l.startswith("H1-") for l in libs])[T_]
+        o_ = int(cell.G[c3.G_SPECKLE]); n_ = int(cell.G[o_]); S_ = cell.G[o_ + 1:o_ + 1 + 4 * n_].reshape(n_, 4)
+        from scipy.spatial import cKDTree
+        d_, k_ = cKDTree(S_[:, :3]).query(P_[isch].astype(np.float64), k=1)
+        drop = np.zeros(len(T_), bool); drop[np.nonzero(isch)[0][d_ < S_[k_, 3]]] = True
+        print(f"speckles: dropped {int(drop.sum()):,} chromatin pre-pass instances (nucleosomes, H1) inside {n_} speckles", flush=True)
+        T_, P_, Q_ = T_[~drop], P_[~drop], Q_[~drop]
     tij = np.floor((P_ - lo0) / TILE).astype(np.int64)
     tid = np.array([key.get(tuple(t), -1) for t in tij]) if len(tij) < 5_000_000 else _tile_ids(tij, M)
     keep = tid >= 0

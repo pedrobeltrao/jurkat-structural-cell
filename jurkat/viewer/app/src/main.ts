@@ -478,6 +478,7 @@ function renderLegend() {
     ...(hasRegion(18) ? [sw(PAL[18], 'nucleolar protein')] : []), ...(hasRegion(21) ? [sw(PAL[21], 'cortex protein')] : []),
     ...(hasRegion(22) ? [sw(PAL[22], 'nuclear lamina')] : []), ...(hasRegion(19) ? [sw(PAL[19], 'lipid-anchored (PM, inner)')] : []),
     ...(hasRegion(20) ? [sw(PAL[20], 'lipid/GPI-anchored (PM, outer)')] : []),
+    ...(hasRegion(31) ? [sw(PAL[31], 'nuclear speckle protein')] : []),
     sw('#F3C643', 'lipid head'), sw('#F8E3A0', 'lipid tail'),
     ...(geo?.face?.on ? [sw(PAL[92], 'flat face: edge of the EM data')] : [])].join('');
   else if (m === 1) el.innerHTML = sw('#4C8CD9', 'experimental (PDB)') + sw('#F5A84C', 'AlphaFold model');
@@ -883,8 +884,8 @@ function updateMinimap(now: number) {
     mmBasis = { u, v, c: c0, ext };
     const N = 120, img = g.createImageData(N, N);
     // per label (LABEL_NAMES): exterior, cytosol, perinuclear, nucleoplasm, nucleolus, IMS, matrix, ER, Golgi, endo, pore,
-    // outside the EM volume (transparent, as the exterior)
-    const cols = [PAL[80], '#C4D6EB', PAL[6], PAL[1], PAL[18], '#E8B48F', PAL[2], PAL[3], PAL[4], PAL[5], '#C9C2DC', PAL[80]]
+    // outside the EM volume (transparent, as the exterior), nuclear speckle (v6)
+    const cols = [PAL[80], '#C4D6EB', PAL[6], PAL[1], PAL[18], '#E8B48F', PAL[2], PAL[3], PAL[4], PAL[5], '#C9C2DC', PAL[80], PAL[31]]
       .map(h => { const x = parseInt(h.slice(1), 16); return [(x >> 16) & 255, (x >> 8) & 255, x & 255]; });
     for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) {
       const x = ((i + 0.5) / N * 2 - 1) * ext, y = (1 - (j + 0.5) / N * 2) * ext;

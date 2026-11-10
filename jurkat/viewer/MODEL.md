@@ -12,7 +12,7 @@ organelle outlines.
   loaded, the section shows overview stand-ins (about 100 molecules per tile, sampled by mass, enlarged and coloured
   by compartment). Copy numbers in the inspect panel are counts in the whole cell. The compartment fields for cut
   faces are sampled at 48 nm (cell, nuclear envelope) and 32 nm (mitochondria, ER, Golgi, endo-lysosomal,
-  nucleolus); membrane meshes per tile are 8 nm. The current data are model v5.
+  nucleolus); membrane meshes per tile are 8 nm. The current data are model v5 (the viewer also reads model v6).
 - **Sub-volume build** (`jenc.py`). A cube of 1.6 µm (8 x 8 x 8 tiles of 200 nm) chosen to contain plasma membrane, cytoplasm, nuclear
   envelope and nucleus (and mitochondria / ER where possible), re-centred on the origin (`jenc.py`).
 - **Molecules.** Every instance in the cube, as placed by the Jurkat packing pipeline, with its PDB or AlphaFold DB
@@ -22,7 +22,8 @@ organelle outlines.
   perinuclear space within 17 nm of the nuclear-envelope midsurface (except in pores), the nucleolus inside the
   nucleoplasm (no membrane; from the EM nucleolus segmentation), mitochondrial intermembrane space 8 nm wide inside the
   outer membrane, and lamellar cristae (intracristal lumen 20 nm wide, lamellae 70-100 nm apart, joined to the
-  intermembrane space by junction ribbons; the crista lumen counts as intermembrane space).
+  intermembrane space by junction ribbons; the crista lumen counts as intermembrane space). Model v6 adds nuclear
+  speckles as spheres (radius 250 nm) inside the nucleoplasm (not in the nucleolus or the pore channels).
 - **Edge of the EM data.** The imaged FIB-SEM volume ends at the bottom of cell 1 and truncates it (about 3-4% of the
   cell was not imaged). The model treats this flat face as an open boundary: no plasma membrane, no membrane proteins
   or lipids on it, nothing modelled beyond it. The viewer draws the face in flat grey (a grey line on cut faces) and
@@ -34,6 +35,11 @@ organelle outlines.
   proteins and complexes requested in soluble regions are routed to their membrane, and small proteins (< 60 kDa)
   annotated in both nucleus and cytoplasm get a nuclear pool. In the viewer each shell is its own compartment
   (Colour by: Compartment).
+- **Model v6 placement classes.** Proteins annotated to nuclear speckles (e.g. SRSF splicing factors, SON, SRRM2) have a
+  share in the speckle spheres (Colour by: Compartment, "nuclear speckle", magenta). Nuclear transport receptors and
+  pore basket proteins fill a shell next to the nuclear pores, on both faces of the nuclear envelope, within 150 nm of a
+  pore axis. The viewer has no separate compartment code left for it, so these proteins count as "nuclear pore (NPC and
+  pore-proximal)".
 - **Whole-cell context.** Organelle surfaces of the entire cell at 48 nm resolution (Organelles and Membranes views).
 - **Lipids.** Generated in the browser near the camera, generic mammalian composition (PC 45%, PE 20%, SM 10%,
   PS 8%, PI 5%, other 12%); cholesterol is not drawn.

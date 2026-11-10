@@ -21,11 +21,13 @@ REGION_NAMES = ["cytosol", "nucleoplasm", "matrix", "ER_lumen", "golgi_lumen", "
                 "mem_ER", "mem_MITO_OM", "mem_MITO_IM", "mem_GOLGI", "mem_ENDO", "chromatin", "polysome_ribosome", "cytoskeleton", "NPC",
                 # model v5 (data.ts REGION_NAMES 18-30)
                 "nucleolus", "sh_PM_cyto", "sh_PM_exo", "sh_PM_cortex", "sh_NE_lamina", "sh_NE_nuc", "sh_ER_cyto", "sh_ER_lumen",
-                "sh_GOLGI_cyto", "sh_GOLGI_lumen", "sh_ENDO_cyto", "sh_ENDO_lumen", "sh_OM_cyto"]
+                "sh_GOLGI_cyto", "sh_GOLGI_lumen", "sh_ENDO_cyto", "sh_ENDO_lumen", "sh_OM_cyto",
+                # model v6 (data.ts REGION_NAMES 31; pack region sh_NPC maps to NPC 17)
+                "speckle"]
 MEM_NAMES = ["PM", "NE", "ER", "MITO_OM", "MITO_IM", "GOLGI", "ENDO"]
 LABEL_NAMES = ["exterior", "cytosol", "perinuclear", "nucleoplasm", "nucleolus", "mito_IMS", "mito_matrix", "ER_lumen",
-               "golgi_lumen", "endolysosomal_lumen", "pore_channel", "outside_EM_volume"]
-OUTV = 11
+               "golgi_lumen", "endolysosomal_lumen", "pore_channel", "outside_EM_volume", "speckle"]
+OUTV, SPK = 11, 12
 CR_HDR = 32                          # fields.ts: cristae header words appended to F
 TILE, Q_ORG, QSTEP = 200.0, 80.0, 360.0 / 65535.0
 OFF_BITS = 26                       # shaders.ts draw-list offset width
@@ -57,8 +59,9 @@ def read(path, rng=None):
 
 # ------------------------------------------------------------------ fields (fields.ts)
 class FArr(np.ndarray):
-    """float32 F with the cristae header offset (fields.ts F.crOff)"""
+    """float32 F with the cristae header and speckle section offsets (fields.ts F.crOff, F.spOff)"""
     crOff = 0
+    spOff = 0
 
 
 def load_fields(geo, d):
@@ -66,7 +69,10 @@ def load_fields(geo, d):
     total = 1 + 12 * n + sum(fd["n_index"]) + sum(fd["n_data"])
     if fd.get("total"): total = fd["total"]
     cr = fd.get("cristae"); crOff = -(-total // 16) * 16 if cr else 0
-    F = np.zeros(crOff + CR_HDR if cr else total, np.float32).view(FArr); F[0] = n; off = 0
+    end = crOff + CR_HDR if cr else total
+    sp = (geo.get("speckles") or {}).get("spheres") or []       # v6 (fields.ts: appended at spOff, F[spOff] = n)
+    spOff = -(-end // 16) * 16 if sp else 0
+    F = np.zeros(spOff + 1 + len(sp) if sp else end, np.float32).view(FArr); F[0] = n; off = 0
     for k in range(n):
         for j in (10, 11):
             assert float(np.float32(fd["head"][k][j])) == fd["head"][k][j], f"field {k} offset {fd['head'][k][j]} not exact in float32"
@@ -86,6 +92,8 @@ def load_fields(geo, d):
                                c["CR_W"], c["CR_GAP"], c["CR_JW"]]
     assert off == len(buf), f"geometry_fields.bin: decoded {off} of {len(buf)} bytes"
     F.crOff = crOff if cr else 0
+    if sp: F[spOff] = len(sp) // 4; F[spOff + 1:spOff + 1 + len(sp)] = sp
+    F.spOff = spOff
     return F
 
 
@@ -115,7 +123,7 @@ class Geo:
     def __init__(self, geo, F):
         self.F = F; c = geo["consts"]; self.PERI, self.IMS, self.PORE_R = c["PERI_W"], c["IMS_W"], c["PORE_R"]
         fc = geo.get("face") or {}; self.face_on = bool(fc.get("on")); self.zf = float(fc.get("z", -1e9)) if self.face_on else -1e9
-        self.crOff = getattr(F, "crOff", 0); self.nF = int(F[0])
+        self.crOff = getattr(F, "crOff", 0); self.spOff = getattr(F, "spOff", 0); self.nF = int(F[0])
         half = geo["cube_nm"] / 2; rc = self.PORE_R + 0.5 * self.PERI; reach = math.hypot(150, rc) + 2
         P = np.array(geo["pores"], float).reshape(-1, 6)
         self.n_pores_all = len(P)
@@ -128,6 +136,15 @@ class Geo:
             r = v - zz * p[3:]
             if r @ r < rc * rc: return float(np.sqrt(r @ r))
         return -1.0
+
+    def in_speckle(self, x, y, z):
+        """geometry.ts inSpeckle (= cell3d.in_speckle) on the F section at spOff"""
+        if not self.spOff: return -1
+        F, o = self.F, self.spOff
+        for k in range(int(F[o])):
+            q = o + 1 + 4 * k; dx, dy, dz = x - F[q], y - F[q + 1], z - F[q + 2]
+            if dx * dx + dy * dy + dz * dz < F[q + 3] * F[q + 3]: return k
+        return -1
 
     def mem_sdfs(self, x, y, z):
         d = [0.0] * 7; rc = self.PORE_R + 0.5 * self.PERI
@@ -170,6 +187,7 @@ class Geo:
         if hp < -0.5 * PERI:
             if hp > -PERI - 8 and self.in_pore(x, y, z, self.PORE_R + 0.5 * PERI) >= 0: return 10
             if self.nF > 6 and field_sdf(self.F, x, y, z, 6) < 0: return 4
+            if self.in_speckle(x, y, z) >= 0: return SPK
             return 3
         if hp < 0: return 10
         if d[3] < 0: return 6 if matrix < 0 else 5
@@ -240,7 +258,8 @@ def main():
               f"{T[:, c['n_inst']].sum():,} instances, {T[:, c['n_ghost']].sum():,} ghosts, {T[:, c['n_tri']].sum():,} mesh triangles, "
               f"{T[:, c['gz_bytes']].sum() / 1e6:.1f} MB gz; 'wall' key: {'wall' in J}")
         for key, want in (("region_names", REGION_NAMES), ("mem_names", MEM_NAMES), ("label_names", LABEL_NAMES)):
-            print(f"  {key} {'match the app' if J[key] == want else 'DIFFER from the app: ' + str(J[key])}")
+            ok_ = J[key] == want or J[key] == want[:len(J[key])]          # older builds (v4/v5): a prefix of the v6 lists
+            print(f"  {key} {('match the app' + ('' if J[key] == want else f' (older build: first {len(J[key])})')) if ok_ else 'DIFFER from the app: ' + str(J[key])}")
         assert T[:, :3].min() >= -64 and T[:, :3].max() <= 63, "tiles outside the app's tile-state grid (data.TGRID 128, -64..63)"
         whole = bool(J.get("whole_cell")); sh = J.get("shard")
         if whole:
@@ -323,6 +342,8 @@ def main():
     h = np.bincount(lab, minlength=len(LABEL_NAMES))
     print("  label fractions (16^3 grid): " + ", ".join(f"{LABEL_NAMES[i]} {h[i] / len(lab) * 100:.1f}%" for i in np.nonzero(h)[0]))
     if G.face_on: print(f"  open face at z = {G.zf:.1f} nm (label {LABEL_NAMES[OUTV]} below)")
+    if G.spOff: print(f"  speckles: {int(F[G.spOff])} spheres (r {F[G.spOff + 4]:.0f} nm ...) at F[{G.spOff}]")
+    else: print("  speckles: none in geometry.json")
     if G.crOff: print(f"  cristae: {int(F[G.crOff])} mitochondria, id grid {[int(v) for v in F[G.crOff + 5:G.crOff + 8]]} at {F[G.crOff + 4]} nm, "
                       f"{geo['fields']['cristae']['n_data'] // int(F[G.crOff + 8]) ** 3} stored id bricks")
     if not a.fields_only:
@@ -365,9 +386,18 @@ def main():
         # crista lumens: IMS points inside the boundary inner membrane (matrix SDF of the boundary < 0)
         mq = cell.mems(Q + C); lumen = (rq == c3.IMS) & (mq[:, c3.M_OM] + c3.IMS_W < 0)
         extra, tag = [], []
-        for L in (c3.NUCL, c3.IMS, c3.MATRIX, c3.ERL, c3.GOLGI, c3.ENDO, c3.PERI, c3.PORE, c3.OUTV):
+        for L in (c3.NUCL, getattr(c3, "SPK", -99), c3.IMS, c3.MATRIX, c3.ERL, c3.GOLGI, c3.ENDO, c3.PERI, c3.PORE, c3.OUTV):
             k = np.flatnonzero(rq == L)[:a.strat]; extra.append(Q[k]); tag += [LABEL_NAMES[L]] * len(k)
         k = np.flatnonzero(lumen)[:a.strat]; extra.append(Q[k]); tag += ["IMS: crista lumen"] * len(k)
+        # v6 nuclear speckles: points in balls of 1.25 r around the geometry.json spheres (viewer frame), split by the
+        # cell3d label into inside (speckle) and the shell just outside (nucleoplasm, nucleolus, ...)
+        spr = np.array((geo.get("speckles") or {}).get("spheres", []), float).reshape(-1, 4)
+        if len(spr):
+            m = 8 * a.strat; j = rng.integers(0, len(spr), m)
+            v = rng.normal(size=(m, 3)); v /= np.linalg.norm(v, axis=1)[:, None]
+            Qs = spr[j, :3] + v * (spr[j, 3] * 1.25 * rng.uniform(0, 1, m) ** (1 / 3))[:, None]; rs = cell.labels(Qs + C)
+            k = np.flatnonzero(rs == SPK)[:a.strat]; extra.append(Qs[k]); tag += ["speckle (ball)"] * len(k)
+            k = np.flatnonzero(rs != SPK)[:a.strat]; extra.append(Qs[k]); tag += ["near speckle (outside)"] * len(k)
         P = np.r_[P, np.concatenate(extra)]; ref = np.r_[ref, np.concatenate([cell.labels(e + C) if len(e) else np.zeros(0, np.int8) for e in extra])]
         tag = np.array(["random"] * a.n + tag)
         app = np.array([G.label(*q) for q in P])
@@ -379,12 +409,19 @@ def main():
         k = tag == "IMS: crista lumen"
         if k.any(): print(f"  crista lumens (IMS inside the boundary IM): {(app[k] == c3.IMS).mean() * 100:.1f}% of {k.sum():,} labelled IMS by the app "
                           f"(matrix {(app[k] == c3.MATRIX).mean() * 100:.1f}%)")
+        for t_ in ("speckle (ball)", "near speckle (outside)"):
+            k = tag == t_
+            if k.any(): print(f"  {t_}: {(app[k] == ref[k]).mean() * 100:.2f}% of {k.sum():,} agree "
+                              f"(app speckle {(app[k] == SPK).mean() * 100:.1f}%, cell3d speckle {(ref[k] == SPK).mean() * 100:.1f}%)")
         dis = ref != app
         if dis.any():
             mm = cell.mems(P + C); dmin = np.abs(mm[:, :7]).min(1)
             dn = np.array([abs(c3.field_sdf(*(q + C), cell.G, c3.F_NUCLEOLUS)) if c3.F_NUCLEOLUS < int(cell.G[c3.G_N]) else 1e9 for q in P[dis]])
+            spr = np.array(geo.get("speckles", {}).get("spheres", [])).reshape(-1, 4)
+            ds = (np.abs(np.linalg.norm(P[dis][:, None, :] - spr[None, :, :3], axis=2) - spr[None, :, 3]).min(1) if len(spr)
+                  else np.full(dis.sum(), 1e9))
             print(f"  disagreeing points: median distance to the nearest membrane {np.median(dmin[dis]):.2f} nm (all points {np.median(dmin):.1f} nm), "
-                  f"to the nucleolus surface {np.median(dn):.1f} nm")
+                  f"to the nucleolus surface {np.median(dn):.1f} nm, to a speckle surface {np.median(ds):.1f} nm")
             pairs, cnts = np.unique(np.c_[ref[dis], app[dis]], axis=0, return_counts=True)
             o = np.argsort(-cnts)[:12]
             print("  pairs (cell3d -> app): " + ", ".join(f"{LABEL_NAMES[pairs[i][0]]}->{LABEL_NAMES[pairs[i][1]]} {cnts[i]}" for i in o))

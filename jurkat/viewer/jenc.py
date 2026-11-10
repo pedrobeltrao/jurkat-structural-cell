@@ -32,8 +32,13 @@ PRE_REG = ["chromatin", "polysome_ribosome", "cytoskeleton", "NPC"]
 # 31 ids <= 32: fits the 5-bit region field of the instance word and of the overview stand-in word (w = 7 | region << 4 | ...).
 V5_EXTRA = ["nucleolus", "sh_PM_cyto", "sh_PM_exo", "sh_PM_cortex", "sh_NE_lamina", "sh_NE_nuc", "sh_ER_cyto", "sh_ER_lumen",
             "sh_GOLGI_cyto", "sh_GOLGI_lumen", "sh_ENDO_cyto", "sh_ENDO_lumen", "sh_OM_cyto"]
-REGION_NAMES = RNAMES + PRE_REG + V5_EXTRA
+# v6 (jpack_test.RNAMES: + speckle volume region after the nucleolus, + sh_NPC shell): speckle = viewer id 31, the last id of
+# the 5-bit field. sh_NPC (NPC-proximal shell, both faces of the NE next to pores: transport receptors, basket proteins)
+# shares the existing viewer region NPC (17) (PACK_ALIAS), since no id is left.
+V6_EXTRA = ["speckle"]
+REGION_NAMES = RNAMES + PRE_REG + V5_EXTRA + V6_EXTRA
 assert len(REGION_NAMES) <= 32
+PACK_ALIAS = {"sh_NPC": "NPC", "sh_PM_periph": "sh_PM_cyto", "sh_ENDO_periph": "sh_ENDO_cyto", "sh_GOLGI_periph": "sh_GOLGI_cyto"}  # pack region -> viewer region of another name (v6: NPC shell -> NPC; peripheral shells share the anchored-shell ids)
 V4_PACK_RNAMES = RNAMES                                        # job_region numbering of packs v1-v4
 
 
@@ -42,16 +47,23 @@ def region_map(pack_rnames):
     membranes, mapped to 'mem_PM' ...) or the v4 list above (identity)"""
     m = []
     for n in pack_rnames:
-        v = n if n in REGION_NAMES else f"mem_{n}"
+        v = PACK_ALIAS.get(n, n if n in REGION_NAMES else f"mem_{n}")
         assert v in REGION_NAMES, f"pack region {n} has no viewer region id"
         m.append(REGION_NAMES.index(v))
     return np.array(m, np.int64)
 
 
+PACK_SCHEMES = ["v4", "v5", "v6"]
+PACK_DEFAULT = "v6"
+
+
 def pack_rnames(which):
-    """pack region list: 'v4' (jenc.RNAMES) or 'v5'/'current' (jpack_test.RNAMES of the pipeline)"""
+    """pack region list (tile job_region numbering): 'v4' (jenc.RNAMES, packs v1-v4), 'v5' (jpack_test.RNAMES_V5, frozen:
+    the archived v5 tiles), 'v6'/'current' (jpack_test.RNAMES of the pipeline: + speckle at 8, shells shifted by one, + sh_NPC)"""
     if which == "v4": return list(V4_PACK_RNAMES)
     import jpack_test
+    if which == "v5": return list(jpack_test.RNAMES_V5)
+    assert which in ("v6", "current"), which
     return list(jpack_test.RNAMES)
 
 
@@ -257,6 +269,18 @@ def write_fields_bin(out, items, cr):
     return fd
 
 
+def speckles_json(cell, C=np.zeros(3)):
+    """nuclear speckles (cell3d v6 G[G_SPECKLE] section: n, then n x (cx, cy, cz, r) nm) shifted by -C, for geometry.json
+    'speckles'; n = 0 when the geometry has none (G[4] == 0, v5 and older)"""
+    G = cell.G
+    sp = np.zeros((0, 4))
+    if G.shape[0] > c3.G_SPECKLE and G[c3.G_SPECKLE] > 0:
+        o = int(G[c3.G_SPECKLE]); n = int(G[o]); sp = G[o + 1:o + 1 + 4 * n].reshape(n, 4).copy(); sp[:, :3] -= C
+    return dict(n=int(len(sp)), spheres=sp.round(3).ravel().tolist(),
+                note="nuclear speckles (cell3d v6 in_speckle): label speckle inside a sphere (cx, cy, cz, r nm; model frame of "
+                     "the viewer), within the nucleoplasm branch after the nucleolus test; no membrane")
+
+
 def face_json(cell, C=np.zeros(3)):
     zf = face_z(cell)
     return dict(on=zf is not None, z=(zf - float(C[2])) if zf is not None else 0.0,
@@ -281,7 +305,7 @@ def main():
     ap.add_argument("--centre", type=float, nargs=3)
     ap.add_argument("--tiles", default=f"{W}/tiles")
     ap.add_argument("--out", default=f"{V}/jurkat/viewer/web/data")
-    ap.add_argument("--regions", default="v5", choices=["v4", "v5"], help="job_region numbering of the packing tiles")
+    ap.add_argument("--regions", default=PACK_DEFAULT, choices=PACK_SCHEMES, help="job_region numbering of the packing tiles")
     a = ap.parse_args()
     out = a.out; shutil.rmtree(out, ignore_errors=True); os.makedirs(f"{out}/tiles"); os.makedirs(f"{out}/library")
     z = np.load(f"{D}/jgeom_cell1.npz"); cell = c3.Cell(z["G"], z["pores"])
@@ -434,7 +458,7 @@ def main():
     pores = cell.pores.copy(); pores[:, :3] -= C
     json.dump(dict(kind="jurkat_fields", centre_nm=C.tolist(), cube_nm=a.cube, R=float(cell.G[0]), fields=fields,
                    pores=pores.round(4).ravel().tolist(), consts=dict(PERI_W=c3.PERI_W, IMS_W=c3.IMS_W, PORE_R=c3.PORE_R, HALF=c3.HALF),
-                   face=face_json(cell, C), label_names=lab_names, mem_names=MEM_NAMES, region_names=REGION_NAMES,
+                   face=face_json(cell, C), speckles=speckles_json(cell, C), label_names=lab_names, mem_names=MEM_NAMES, region_names=REGION_NAMES,
                    label_rule=LABEL_RULE), open(f"{out}/geometry.json", "w"), separators=(",", ":"))
     organelle_meshes(cell, C, out)
     bookmarks(cell, C, a.cube, out, len(T))
@@ -444,9 +468,9 @@ def main():
     log("done", out)
 
 
-LABEL_RULE = ("cell3d.label_from (v5): outside_EM_volume below the open face (face.z); exterior if -field(cell) < 0; perinuclear if "
-              "|field(ne_mid)| < PERI_W/2 (pore torus); nucleoplasm side: pore channel, nucleolus if field(nucleolus) < 0, else "
-              "nucleoplasm; mito: matrix if max(mito + IMS_W, -crista_lumen) < 0 else IMS; then ER, golgi, endo; else cytosol")
+LABEL_RULE = ("cell3d.label_from (v6): outside_EM_volume below the open face (face.z); exterior if -field(cell) < 0; perinuclear if "
+              "|field(ne_mid)| < PERI_W/2 (pore torus); nucleoplasm side: pore channel, nucleolus if field(nucleolus) < 0, speckle "
+              "if inside a speckles sphere, else nucleoplasm; mito: matrix if max(mito + IMS_W, -crista_lumen) < 0 else IMS; then ER, golgi, endo; else cytosol")
 
 
 def organelle_meshes(cell, C, out, h=64.0):

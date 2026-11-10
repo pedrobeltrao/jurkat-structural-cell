@@ -115,46 +115,47 @@ export interface TypeRec {
 // Jurkat (jurkat/viewer/jenc.py REGION_NAMES): instance region codes, membrane (face_mem) order and compartment labels.
 // Ids 0-17 are the v1-v4 regions (unchanged, so v4 data decode as before); model v5 adds 18 nucleolus and 19-30 the
 // membrane-associated shells (lipid-anchored proteins on either side of their membrane, the cortex under the plasma
-// membrane, the nuclear lamina). 31 ids fit the 5-bit region field of the instance and stand-in words.
+// membrane, the nuclear lamina); model v6 adds 31 nuclear speckle (the last id of the 5-bit region field of the instance
+// and stand-in words) and maps its NPC-proximal shell (pack region sh_NPC) to 17 (nuclear pore).
 export const REGION_NAMES = ['cytosol', 'nucleoplasm', 'mitochondrial matrix', 'ER lumen', 'Golgi lumen', 'endo-lysosomal lumen',
   'perinuclear space', 'plasma membrane', 'nuclear envelope', 'ER membrane', 'mito outer membrane', 'mito inner membrane',
-  'Golgi membrane', 'endo-lysosomal membrane', 'chromatin', 'polysome ribosome', 'cytoskeleton', 'nuclear pore',
+  'Golgi membrane', 'endo-lysosomal membrane', 'chromatin', 'polysome ribosome', 'cytoskeleton', 'nuclear pore (NPC and pore-proximal)',
   'nucleolus', 'PM, cytosolic side (lipid-anchored)', 'PM, outer side (lipid/GPI-anchored)', 'cortex under the PM',
   'nuclear lamina', 'inner nuclear membrane, nucleoplasmic side (anchored)', 'ER, cytosolic side (lipid-anchored)',
   'ER, lumenal side (anchored)', 'Golgi, cytosolic side (lipid-anchored)', 'Golgi, lumenal side (anchored)',
   'endo-lysosome, cytosolic side (lipid-anchored)', 'endo-lysosome, lumenal side (anchored)',
-  'mito outer membrane, cytosolic side (anchored)'];
+  'mito outer membrane, cytosolic side (anchored)', 'nuclear speckle'];
 export const MEM_NAMES = ['plasma membrane', 'nuclear envelope', 'ER membrane', 'mito outer membrane', 'mito inner membrane',
   'Golgi membrane', 'endo-lysosomal membrane'];
 export const LABEL_NAMES = ['exterior', 'cytosol', 'perinuclear space', 'nucleoplasm', 'nucleolus', 'mito intermembrane space',
   'mito matrix', 'ER lumen', 'Golgi lumen', 'endo-lysosomal lumen', 'nuclear pore channel',
-  'edge of the EM data (the imaged volume ends here; the cell continues)'];
-export const L_OUTV = 11;
+  'edge of the EM data (the imaged volume ends here; the cell continues)', 'nuclear speckle'];
+export const L_OUTV = 11, L_SPK = 12;
 // procedural lipid classes (worker.ts LCUM; index 5 is the sterol slot of the shader, unused: cholesterol is not drawn as a headgroup)
 export const LIPID_CLASSES = ['PI', 'PE', 'PC', 'SM', 'PS', '(sterol, unused)', 'other lipids'];
 // region indices of membrane-embedded instances (shaders.ts animInst uses the same range)
 export const MEM_REGIONS = [7, 8, 9, 10, 11, 12, 13];
-export const SOLUBLE_REGIONS = [0, 1, 2, 3, 4, 5, 6, 18];
+export const SOLUBLE_REGIONS = [0, 1, 2, 3, 4, 5, 6, 18, 31];
 // v5 membrane-associated shells (not in the bilayer: animated like soluble proteins)
 export const SHELL_REGIONS = [19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30];
 
 // Goodsell-inspired palette (shared by shaders through a storage buffer)
-// 0..30 instance regions, 32..42 lipids, 48..53 free-sphere kinds, 56..62 organelle-mode membranes (MEM order),
+// 0..31 instance regions, 32..42 lipids, 48..53 free-sphere kinds, 56..62 organelle-mode membranes (MEM order),
 // 66..72 membranes-only view (colour of the enclosed compartment), 80..90 compartment-label fill, 91 traced cell surface,
-// 92 the open face (edge of the EM data)
+// 92 the open face (edge of the EM data), 93 nuclear-speckle fill (label 12: 80 + 12 would be 92)
 export const PAL: Record<number, string> = {
   0: '#9DB9DA', 1: '#B993C9', 2: '#E39A5B', 3: '#8DBF7A', 4: '#E6C653', 5: '#A57F5A', 6: '#C9A6D6',
   7: '#5B8FC7', 8: '#8E6BB0', 9: '#5FAE75', 10: '#C27C55', 11: '#B5653F', 12: '#C9A93B', 13: '#8A6440',
   14: '#9A72B8', 15: '#EE9BC0', 16: '#74C476', 17: '#7F98B5',
   18: '#8A4F9E', 19: '#7FA8DA', 20: '#3F6FA8', 21: '#D9A26B', 22: '#6A4C9C', 23: '#A88BC6', 24: '#82C493', 25: '#5E9A55',
-  26: '#DDC466', 27: '#B0922C', 28: '#B8936B', 29: '#76543A', 30: '#D58C64',
+  26: '#DDC466', 27: '#B0922C', 28: '#B8936B', 29: '#76543A', 30: '#D58C64', 31: '#C2408A',
   32: '#F3C643', 33: '#F0BC3C', 34: '#F6D15E', 35: '#EAB542', 36: '#EFA83A', 37: '#E7A93C', 38: '#F2CA55',
   40: '#F3C643', 41: '#F8E3A0', 42: '#E7A93C',
   48: '#B0437A', 49: '#E07636', 50: '#CDA866', 51: '#C3C27A', 52: '#C9558F', 53: '#7CC6C2',
   56: '#7EA7D3', 57: '#B993C9', 58: '#5FAE75', 59: '#D9946B', 60: '#B5653F', 61: '#E6C653', 62: '#A57F5A',
   66: '#A9C3E3', 67: '#B993C9', 68: '#A3C48C', 69: '#E8B48F', 70: '#D9946B', 71: '#E9D27A', 72: '#B89676',
   80: '#F6F1E7', 81: '#E4ECF5', 82: '#EBD9EA', 83: '#F1E7F1', 84: '#D6B9DE', 85: '#F6E6DA', 86: '#F2DCCB',
-  87: '#E8F0DF', 88: '#F7EDC4', 89: '#EEE3D6', 90: '#ECE8F2', 91: '#D3DFEE', 92: '#8D939C',
+  87: '#E8F0DF', 88: '#F7EDC4', 89: '#EEE3D6', 90: '#ECE8F2', 91: '#D3DFEE', 92: '#8D939C', 93: '#F2C9DF',
 };
 export function paletteArray(): Float32Array<ArrayBuffer> {
   const a = new Float32Array(96 * 4);

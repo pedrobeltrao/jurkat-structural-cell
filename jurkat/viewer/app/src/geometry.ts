@@ -1,10 +1,10 @@
 // JavaScript port of the compartment geometry (same as the WGSL fill shader) for the minimap and picking.
 // Jurkat T cell: distance fields (fields.ts), nuclear pores, and (model v5) the nucleolus field, procedural cristae
-// and the open face; label rule = cell3d.mem_sdfs + cell3d.label_from of the Jurkat pipeline (jurkat/yc/pipeline/cell3d.py).
+// and the open face, (model v6) the nuclear speckles (spheres); label rule = cell3d.mem_sdfs + cell3d.label_from of the Jurkat pipeline (jurkat/yc/pipeline/cell3d.py).
 import { F_CELL, F_NE, F_MITO, F_ER, F_GOLGI, F_ENDO, F_NUCLEOLUS, nFields, fieldSdf } from './fields';
 
 // label codes (data.LABEL_NAMES order = cell3d.LABEL_NAMES); L_OUTV: below the open face (outside the imaged EM volume)
-export const L_EXT = 0, L_CYTO = 1, L_PERI = 2, L_NUCP = 3, L_NUCL = 4, L_IMS = 5, L_MATRIX = 6, L_ERL = 7, L_GOLGI = 8, L_ENDO = 9, L_PORE = 10, L_OUTV = 11;
+export const L_EXT = 0, L_CYTO = 1, L_PERI = 2, L_NUCP = 3, L_NUCL = 4, L_IMS = 5, L_MATRIX = 6, L_ERL = 7, L_GOLGI = 8, L_ENDO = 9, L_PORE = 10, L_OUTV = 11, L_SPK = 12;
 // membrane codes (data.MEM_NAMES order = jenc.MEM_NAMES = face_mem)
 export const M_PM = 0, M_NE = 1, M_ER = 2, M_OM = 3, M_IM = 4, M_GOLGI = 5, M_ENDO = 6, NMEM = 7;
 
@@ -28,7 +28,9 @@ export function prepareGeometry(geo: any) {
   // cristae header in F (fields.ts CR_HDR; 0 = no cristae; a multiple of 16, exact in float32)
   geo.faceOn = !!geo.face?.on; geo.zFace = geo.faceOn ? geo.face.z : -1e9;
   geo.crOff = (geo.F as any)?.crOff ?? 0;
-  geo.G[3] = geo.faceOn ? 1 : 0; geo.G[4] = geo.zFace; geo.G[5] = geo.crOff;
+  // model v6 (uniform Geo.G1.z): offset of the speckle section in F (fields.ts F.spOff; 0 = no speckles)
+  geo.spOff = (geo.F as any)?.spOff ?? 0;
+  geo.G[3] = geo.faceOn ? 1 : 0; geo.G[4] = geo.zFace; geo.G[5] = geo.crOff; geo.G[6] = geo.spOff;
   geo.PT = []; geo.PQ = []; geo.PC = [];
   const c = geo.consts, rc = c.PORE_R + 0.5 * c.PERI_W;
   const reach = Math.hypot(PORE_AXIAL, rc) + 2;        // a pore influences points at most this far from its centre
@@ -63,10 +65,10 @@ export interface MemSdf { d: number[]; matrix: number; hp: number }
 export class Geometry {
   G: number[]; pores: number[]; c: any; grid: any; n3: number;
   F: Float32Array | null;
-  faceOn: boolean; zFace: number; crOff: number;
+  faceOn: boolean; zFace: number; crOff: number; spOff: number;
   constructor(geo: any) {
     this.F = geo.F ?? null;
-    this.faceOn = !!geo.faceOn; this.zFace = geo.zFace ?? -1e9; this.crOff = geo.crOff ?? 0;
+    this.faceOn = !!geo.faceOn; this.zFace = geo.zFace ?? -1e9; this.crOff = geo.crOff ?? 0; this.spOff = geo.spOff ?? 0;
     this.G = geo.G; this.pores = geo.pores; this.c = geo.consts; this.grid = geo.grid;
     this.n3 = geo.grid.n ** 3;
   }
@@ -116,6 +118,16 @@ export class Geometry {
     const w = Math.abs(F[q + 5] * (x - F[q + 8]) + F[q + 6] * (y - F[q + 9]) + F[q + 7] * (z - F[q + 10])) - CR_JW;
     return Math.min(lam, Math.max(slab, w));
   }
+  /** cell3d.in_speckle: index of the nuclear speckle sphere containing p, or -1 (none without a speckle section) */
+  inSpeckle(x: number, y: number, z: number): number {
+    if (this.spOff <= 0) return -1;
+    const F = this.F!, o = this.spOff, n = F[o];
+    for (let k = 0; k < n; k++) {
+      const q = o + 1 + 4 * k, dx = x - F[q], dy = y - F[q + 1], dz = z - F[q + 2], r = F[q + 3];
+      if (dx * dx + dy * dy + dz * dz < r * r) return k;
+    }
+    return -1;
+  }
   /** cell3d.mem_sdfs: signed distance to each membrane (negative = lumenal / non-cytoplasmic side) */
   memSdfs(x: number, y: number, z: number): MemSdf {
     const PERI = this.c.PERI_W, IMS = this.c.IMS_W, rc = this.c.PORE_R + 0.5 * PERI;
@@ -148,6 +160,7 @@ export class Geometry {
     if (hp < -0.5 * PERI) {
       if (hp > -PERI - 8 && this.inPore(x, y, z, rc).k >= 0) return L_PORE;
       if (nFields(this.F) > F_NUCLEOLUS && this.field(F_NUCLEOLUS, x, y, z) < 0) return L_NUCL;
+      if (this.inSpeckle(x, y, z) >= 0) return L_SPK;          // nuclear speckle (model v6)
       return L_NUCP;
     }
     if (hp < 0) return L_PORE;                               // pore channel between the midplane and the ONM

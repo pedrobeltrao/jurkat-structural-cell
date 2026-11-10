@@ -179,8 +179,10 @@ RN = ["cytosol", "nucleoplasm", "matrix", "ER_lumen", "golgi_lumen", "endo_lumen
       "PM", "NE", "ER", "MITO_OM", "MITO_IM", "GOLGI", "ENDO"]                 # jpack_test RNAMES (tile job_region), v4
 SHELLS = ["sh_PM_cyto", "sh_PM_exo", "sh_PM_cortex", "sh_NE_lamina", "sh_NE_nuc", "sh_ER_cyto", "sh_ER_lumen", "sh_GOLGI_cyto",
           "sh_GOLGI_lumen", "sh_ENDO_cyto", "sh_ENDO_lumen", "sh_OM_cyto"]
-if VER != "v4":
+if VER == "v5":
     RN = RN[:7] + ["nucleolus"] + RN[7:] + SHELLS                         # v5 jpack_test.RNAMES
+elif VER != "v4":                                                         # v6: + speckle (volume) and the NPC-proximal shell
+    RN = RN[:7] + ["nucleolus", "speckle"] + RN[7:] + SHELLS + ["sh_NPC", "sh_PM_periph", "sh_ENDO_periph", "sh_GOLGI_periph"]
 COMPS = ["PM", "cytosol", "nucleus", "NE", "ER", "mito", "golgi", "endolysosomal"]
 REG2COMP = {"cytosol": "cytosol", "nucleoplasm": "nucleus", "matrix": "mito", "ER_lumen": "ER", "golgi_lumen": "golgi",
             "endo_lumen": "endolysosomal", "perinuclear": "NE", "PM": "PM", "NE": "NE", "ER": "ER", "MITO_OM": "mito",
@@ -188,8 +190,10 @@ REG2COMP = {"cytosol": "cytosol", "nucleoplasm": "nucleus", "matrix": "mito", "E
             # v5: nucleolus is nuclear; shells count as their membrane at light-microscopy resolution (cortex as PM, lamina as NE)
             "nucleolus": "nucleus", "sh_PM_cyto": "PM", "sh_PM_exo": "PM", "sh_PM_cortex": "PM", "sh_NE_lamina": "NE", "sh_NE_nuc": "NE",
             "sh_ER_cyto": "ER", "sh_ER_lumen": "ER", "sh_GOLGI_cyto": "golgi", "sh_GOLGI_lumen": "golgi", "sh_ENDO_cyto": "endolysosomal",
-            "sh_ENDO_lumen": "endolysosomal", "sh_OM_cyto": "mito"}
-SOLUBLE = {"cytosol", "nucleoplasm", "matrix", "ER_lumen", "golgi_lumen", "endo_lumen", "perinuclear", "nucleolus"}
+            "sh_ENDO_lumen": "endolysosomal", "sh_OM_cyto": "mito",
+            # v6: nuclear speckles are nuclear; the NPC-proximal shell (both faces of the NE, near pores) reads as nuclear rim
+            "speckle": "nucleus", "sh_NPC": "NE", "sh_PM_periph": "PM", "sh_ENDO_periph": "endolysosomal", "sh_GOLGI_periph": "golgi"}
+SOLUBLE = {"cytosol", "nucleoplasm", "matrix", "ER_lumen", "golgi_lumen", "endo_lumen", "perinuclear", "nucleolus", "speckle"}
 # jpack_test.SOL / TMR (copied, not imported: analysis must not depend on pipeline import side effects)
 SOL = {"cytosol": "cytosol", "cytoskeleton": "cytosol", "peroxisome": "cytosol", "lipid_droplet": "cytosol", "unassigned": "cytosol",
        "plasma_membrane": "cytosol", "nucleus": "nucleoplasm", "nuclear_envelope": "nucleoplasm", "mitochondrion": "matrix",
@@ -197,17 +201,23 @@ SOL = {"cytosol": "cytosol", "cytoskeleton": "cytosol", "peroxisome": "cytosol",
        "nucleolus": "nucleolus", "pm_anchor_cyto": "sh_PM_cyto", "pm_anchor_exo": "sh_PM_exo", "cortex": "sh_PM_cortex",
        "lamina": "sh_NE_lamina", "ne_anchor_nuc": "sh_NE_nuc", "er_anchor_cyto": "sh_ER_cyto", "er_anchor_lumen": "sh_ER_lumen",
        "golgi_anchor_cyto": "sh_GOLGI_cyto", "golgi_anchor_lumen": "sh_GOLGI_lumen", "endo_anchor_cyto": "sh_ENDO_cyto",
-       "endo_anchor_lumen": "sh_ENDO_lumen", "om_anchor_cyto": "sh_OM_cyto"}
+       "endo_anchor_lumen": "sh_ENDO_lumen", "om_anchor_cyto": "sh_OM_cyto", "speckle": "speckle", "npc": "sh_NPC",
+       "pm_periph_cyto": "sh_PM_periph", "endo_periph_cyto": "sh_ENDO_periph", "golgi_periph_cyto": "sh_GOLGI_periph"}
 TMR = {"plasma_membrane": "PM", "nucleus": "NE", "nuclear_envelope": "NE", "mitochondrion": "MITO_IM", "er": "ER", "golgi": "GOLGI",
        "endolysosomal": "ENDO", "cytosol": "ER", "cytoskeleton": "ER", "peroxisome": "ER", "lipid_droplet": "ER", "unassigned": "ER", "secreted": "ER",
        "nucleolus": "NE", "pm_anchor_cyto": "PM", "pm_anchor_exo": "PM", "cortex": "PM", "lamina": "NE", "ne_anchor_nuc": "NE",
        "er_anchor_cyto": "ER", "er_anchor_lumen": "ER", "golgi_anchor_cyto": "GOLGI", "golgi_anchor_lumen": "GOLGI",
-       "endo_anchor_cyto": "ENDO", "endo_anchor_lumen": "ENDO", "om_anchor_cyto": "MITO_IM"}
-PM_REGS = {"PM", "sh_PM_cyto", "sh_PM_exo", "sh_PM_cortex"}
+       "endo_anchor_cyto": "ENDO", "endo_anchor_lumen": "ENDO", "om_anchor_cyto": "MITO_IM", "speckle": "NE", "npc": "NE",
+       "pm_periph_cyto": "PM", "endo_periph_cyto": "ENDO", "golgi_periph_cyto": "GOLGI"}
+PM_REGS = {"PM", "sh_PM_cyto", "sh_PM_exo", "sh_PM_cortex", "sh_PM_periph"}
 PRE_ING = {"NUCLEOSOME": "NUCLEOSOME", "NPC": "NPC", "RIBO80S": "RIBO80S", "MT_TUBA1B-TUBB4B": "TUBA1B-TUBB4B", "F_ACTB": "ACTB"}
 
 
 def pre_region(lib):
+    """pre-pass region. Accounting fix (v6 validation, applied to v5 too): F-actin subunits are all cortical (jcytoskeleton:
+    8-150 nm below the PM), so they count as the cortex shell (-> PM at light resolution, as the packed cortex); MT tubulin
+    stays cytosol (HPA 'Microtubules' maps to cytosol)."""
+    if VER != "v4" and lib == "F_ACTB": return "sh_PM_cortex"
     return "nucleoplasm" if (lib == "NUCLEOSOME" or lib.startswith("H1-")) else "NE" if lib == "NPC" else "cytosol"
 
 
@@ -318,7 +328,7 @@ HPA_MAP = {   # term -> (comp, flag)
     "nucleoli rim": ("nucleus", "no_nucleolus"), "mitotic chromosome": ("nucleus", "mitotic"), "kinetochore": ("nucleus", "mitotic"),
     "nuclear membrane": ("NE", ""),
     "cytosol": ("cytosol", ""), "cytoplasmic bodies": ("cytosol", ""), "rods & rings": ("cytosol", ""), "aggresome": ("cytosol", ""),
-    "actin filaments": ("cytosol", "cortex_not_modelled"), "focal adhesion sites": ("PM", "adherent_cells"),
+    "actin filaments": ("cytosol", "cortex_not_modelled" if VER == "v4" else ""),   # v5+: + PM support (cortex), see sources() "focal adhesion sites": ("PM", "adherent_cells"),
     "microtubules": ("cytosol", ""), "microtubule ends": ("cytosol", ""), "intermediate filaments": ("cytosol", ""),
     "centrosome": ("cytosol", ""), "centriolar satellite": ("cytosol", ""), "basal body": ("cytosol", "cilium"),
     "primary cilium": ("cytosol", "cilium"), "primary cilium tip": ("cytosol", "cilium"),
@@ -496,6 +506,7 @@ def sources(G):
                 for t in str(h[col]).split(";") if isinstance(h[col], str) else []:
                     c, fl = HPA_MAP.get(t.lower(), (None, ""))
                     if c: terms.append((c, w))
+                    if t.lower() == "actin filaments" and VER != "v4": terms.append(("PM", 0.3 * w))   # cortex = PM support
                     if fl: flags.add(fl)
             d["hpa"] = dict(q=dist(terms), rel=rel, w=REL_W.get(rel, 0.0), main=h["Main location"], add=h["Additional location"],
                             flags=flags)
@@ -551,8 +562,9 @@ def jurkat_refs():
     out = {}
     for g, sub in J.groupby("gene"):
         locs = [t for x in sub.locations for t in x.split(";") if t]
-        terms = [HPA_MAP.get(t.lower(), (None, ""))[0] for t in locs]
-        out[g] = dict(q=dist([(c, 1.0) for c in terms if c]), text=";".join(sorted(set(locs))),
+        terms = [(HPA_MAP.get(t.lower(), (None, ""))[0], 1.0) for t in locs]
+        if VER != "v4": terms += [("PM", 0.3) for t in locs if t.lower() == "actin filaments"]   # cortex = PM support
+        out[g] = dict(q=dist([(c, w) for c, w in terms if c]), text=";".join(sorted(set(locs))),
                       rel=";".join(sorted(set(sub.ab_reliability))), n_ab=sub.antibody.nunique())
     return out
 
@@ -791,6 +803,18 @@ def rules(T, M, S):
 
 
 # ----------------------------------------------------------------- hold-out test set (Tier 4)
+_JH = None
+
+
+def jurkat_half(g):
+    """'holdout' / 'fit' for the seeded random halves of the HPA-JURKAT genes (tier2.py split), None otherwise"""
+    global _JH
+    if _JH is None:
+        rd = lambda f: {l.strip() for l in open(f) if l.strip() and not l.startswith("#")} if os.path.exists(f) else set()
+        _JH = (rd(f"{OUT}/jurkat_holdout_genes.txt"), rd(f"{OUT}/jurkat_fit_genes.txt"))
+    return "holdout" if g in _JH[0] else "fit" if g in _JH[1] else None
+
+
 def hpa_split(g):
     """deterministic HPA fit/test half (md5 of the gene symbol); the test half is never used for per-protein overrides"""
     import hashlib
@@ -811,10 +835,12 @@ def holdout():
     sets = {}
     rows = []
     for g in T.index:
+        jh = jurkat_half(g)
         for name, q in (("hpa_jurkat", J.get(g, {}).get("q")), ("opencell", S[g].get("opencell", {}).get("q")),
+                        (f"hpa_jurkat_{jh}_half" if jh else None, J.get(g, {}).get("q")),
                         ("hpa_test_half", S[g].get("hpa", {}).get("q") if (hpa_split(g) == "test" and S[g].get("hpa", {}).get("w", 0) > 0) else None)):
-            if not q: continue
-            if name == "hpa_jurkat" and Jrel.get(g, set()) <= {"uncertain"}: continue
+            if not q or not name: continue
+            if name.startswith("hpa_jurkat") and Jrel.get(g, set()) <= {"uncertain"}: continue
             for mode, pp in (("intended", P[g]), ("placed", PP[g])):
                 if not pp: continue
                 sc = score(pp, q)
@@ -834,10 +860,17 @@ def holdout():
     desc = {"hpa_jurkat": "HPA ICC/IF annotations made on JURKAT cells (per-antibody, per-line XML annotation; antibodies with "
                           "only 'uncertain' reliability excluded); images in data/reference/hpa_subcellular/jurkat_images/",
             "opencell": "OpenCell (HEK293T endogenous split-mNeonGreen tags), grades 3/2/1 = 1/0.6/0.3; best grade = main",
-            "hpa_test_half": "HPA consensus (main 1 / additional 0.3, reliability Approved or better) for the md5 test half of genes"}
+            "hpa_test_half": "HPA consensus (main 1 / additional 0.3, reliability Approved or better) for the md5 test half of genes. "
+                             "NOT a clean hold-out from v5 on (rules used the HPA consensus for all genes)",
+            "hpa_jurkat_holdout_half": "CLEAN hold-out: HPA JURKAT per-line annotations for the seeded random half of the JURKAT genes "
+                                       "(validation/jurkat_holdout_genes.txt); never used to fit or calibrate (v6 rules used a "
+                                       "non-JURKAT HPA consensus for these genes)",
+            "hpa_jurkat_fit_half": "HPA JURKAT per-line annotations for the other half (jurkat_fit_genes.txt); used to calibrate v6 rules "
+                                   "(not a hold-out)"}
     for (name, mode), sub in R.groupby(["set", "mode"]):
         sub = sub.set_index("gene"); m = sub.mass_pg
-        d = out["sets"].setdefault(name, dict(description=desc[name], n_genes=int(len(sub)), mass_pg=round(float(m.sum()), 3)))
+        d = out["sets"].setdefault(name, dict(description=desc[name], n_genes=int(len(sub)), mass_pg=round(float(m.sum()), 3),
+                                              clean=name in ("opencell", "hpa_jurkat_holdout_half")))
         d[mode] = {k: _agg(sub, k, m) for k in ("agree", "agree_tvd", "tophit", "supported_mass", "main_present")}
     out["leakage_notes"] = [
         "HPA consensus locations (subcellular_location.tsv) pool all imaged lines, including JURKAT, and the inventory used them "
@@ -845,7 +878,10 @@ def holdout():
         "JURKAT images; rules are fitted on the HPA fit half only.",
         "OpenCell was never used by the inventory and must not be used for fixes.",
         "Literature T-cell localisations (e.g. Jurkat/primary T-cell imaging papers) are not compiled yet; proposed as a third "
-        "held-out set, curated with PMIDs, before v5 is evaluated."]
+        "held-out set, curated with PMIDs, before v5 is evaluated.",
+        "v6 accounting (applied to the v5 baseline too): pre-pass F-actin counts as cortex (PM at light resolution); HPA 'Actin "
+        "filaments' adds PM as a supporting (0.3) compartment. Clean hold-outs: opencell and hpa_jurkat_holdout_half. The base "
+        "inventory (v0) used the pooled HPA consensus, which includes JURKAT, for all genes: a residual leak for the JURKAT halves."]
     json.dump(out, open(f"{OUT}/loc_holdout_baseline.json" if VER == "v4" else f"{OUT}/loc_holdout{SFX}.json", "w"), indent=1)
     log(json.dumps({k: {m: v[m]["agree"] for m in ("intended", "placed") if m in v} | {"n": v["n_genes"], "pg": v["mass_pg"]}
                     for k, v in out["sets"].items()}, indent=1))

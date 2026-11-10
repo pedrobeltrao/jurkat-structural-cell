@@ -20,6 +20,8 @@ RN = list(jp.RNAMES); NV = jp.NV; NSH0 = jp.NSH0
 SHELL_VOL = {"sh_PM_cyto": "cytosol", "sh_PM_cortex": "cytosol", "sh_NE_lamina": "nucleoplasm", "sh_NE_nuc": "nucleoplasm",
              "sh_ER_cyto": "cytosol", "sh_ER_lumen": "ER_lumen", "sh_GOLGI_cyto": "cytosol", "sh_GOLGI_lumen": "golgi_lumen",
              "sh_ENDO_cyto": "cytosol", "sh_ENDO_lumen": "endo_lumen", "sh_OM_cyto": "cytosol"}
+SHELL_VOL.update({"sh_PM_periph": "cytosol", "sh_ENDO_periph": "cytosol", "sh_GOLGI_periph": "cytosol"})   # v6
+SHELL_SPLIT = {"sh_NPC": {"cytosol": 0.5, "nucleoplasm": 0.5}}   # v6 NPC-proximal shell: both NE faces (split evenly)
 
 
 def tile_mass(files):
@@ -39,6 +41,7 @@ def main():
     vol = {r: float(M[r].sum()) / 1e9 for r in RN[:NV]}                   # um3
     for k in range(NSH0, len(RN)):
         if RN[k] in SHELL_VOL: packed[RN.index(SHELL_VOL[RN[k]])] += packed[k]
+        for r_, f_ in SHELL_SPLIT.get(RN[k], {}).items(): packed[RN.index(r_)] += f_ * packed[k]
     # pre-pass mass by library
     PL = json.load(open(f"{W}/prepass_libs.json")); pt = np.load(f"{W}/prepass_types.npy")
     cnt = np.bincount(pt, minlength=len(PL))
@@ -46,7 +49,7 @@ def main():
     pmass = np.array([float(np.where(np.load(f"{LIB}/{l}.npz")["kind"] == 0, 110.0, 330.0).sum()) for l in PL])
     pre = {"nucleoplasm": 0.0, "cytosol": 0.0}
     for l, c, m in zip(PL, cnt, pmass):
-        pre["nucleoplasm" if (l == "NUCLEOSOME" or l.startswith("H1-")) else "cytosol"] += c * m
+        pre["nucleoplasm" if (l == "NUCLEOSOME" or l.startswith("H1-")) else "cytosol"] += c * m   # (v6: none inside speckles)
     mr = np.load(f"{D}/prepass/mrna_cell1.npz", mmap_mode="r"); nt = float(np.asarray(mr["nt"]).sum())
     rows = []
     for i, r in enumerate(RN[:NV]):
@@ -56,7 +59,7 @@ def main():
                          mg_per_ml=round((prot + extra) / AV / (vol[r] * 1e-12) * 1e3, 1), packed_only_mg_per_ml=round(prot / AV / (vol[r] * 1e-12) * 1e3, 1)))
     T = pd.DataFrame(rows); print(T.to_string(index=False))
     Ti = T.set_index("region"); c = Ti.loc["cytosol", "mg_per_ml"]
-    nm = ["nucleoplasm"] + (["nucleolus"] if "nucleolus" in Ti.index else [])            # whole nucleus (nucleoplasm + nucleolus)
+    nm = ["nucleoplasm"] + [r_ for r_ in ("nucleolus", "speckle") if r_ in Ti.index]   # whole nucleus (+ nucleolus, speckles)
     n = float((Ti.loc[nm, "packed_pg"] + Ti.loc[nm, "prepass_pg"]).sum() / Ti.loc[nm, "volume_um3"].sum() * 1e3)
     print(f"nucleus / cytosol density ratio {n / c:.2f}; membrane-protein mass (pg): " +
           ", ".join(f"{RN[i]} {packed[i] / AV * 1e12:.2f}" for i in range(NV, NSH0)))

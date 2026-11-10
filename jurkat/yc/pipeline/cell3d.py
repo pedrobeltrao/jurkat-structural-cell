@@ -10,6 +10,7 @@ index, offset of the brick data) and the index/data sections (jgeom_build.bricks
 
 Fields (F_*): cell (plasma-membrane midsurface), NE perinuclear midsurface (HMFF fit), mito outer membrane, ER, Golgi,
 endolysosomal, nucleolus (v5; EM nucleolus_seg inside the nucleus; label NUCL inside the nucleoplasm, no membrane).
+v6: nuclear speckles (label SPK, G[G_SPECKLE] section, jspeckles.py) inside the nucleoplasm branch.
 v5 open boundary: cell 1 is truncated by the EM volume's z = 0 face. When G[G_FACE] > 0 the mask fields were extruded
 below the face before the SDF was computed (no membrane on the face), and the model domain is clipped at z = G[G_ZFACE]:
 label OUTV below it, out[M_OUTER] = min(PM depth, z - z_face) so the face is a plain hard wall (not a membrane). Derived: ONM/INM at +-PERI_W/2 around the NE midsurface; mito inner membrane IMS_W inside the outer one, plus
@@ -21,9 +22,9 @@ import numpy as np
 import numba as nb
 
 # ----------------------------------------------------------------- labels / membranes
-EXT, CYTO, PERI, NUCP, NUCL, IMS, MATRIX, ERL, GOLGI, ENDO, PORE, OUTV = range(12)
+EXT, CYTO, PERI, NUCP, NUCL, IMS, MATRIX, ERL, GOLGI, ENDO, PORE, OUTV, SPK = range(13)
 LABEL_NAMES = ["exterior", "cytosol", "perinuclear", "nucleoplasm", "nucleolus", "mito_IMS", "mito_matrix",
-               "ER_lumen", "golgi_lumen", "endolysosomal_lumen", "pore_channel", "outside_EM_volume"]
+               "ER_lumen", "golgi_lumen", "endolysosomal_lumen", "pore_channel", "outside_EM_volume", "speckle"]
 M_PM, M_NE, M_ER, M_OM, M_IM, M_GOLGI, M_ENDO, M_OUTER = range(8)
 MEM_NAMES = ["PM", "NE", "ER", "MITO_OM", "MITO_IM", "GOLGI", "ENDO", "CELL_OUTER"]
 NMEM = 8
@@ -37,6 +38,8 @@ G_N = 8
 G_CRISTAE = 1        # G[1]: offset of the cristae section (jcristae.py), 0 = no cristae (IM = boundary membrane only)
 G_FACE = 2           # G[2] > 0: open boundary (EM-volume truncation face) at z = G[G_ZFACE] (model nm); domain is z >= z_face
 G_ZFACE = 3
+G_SPECKLE = 4        # G[4] > 0: offset of the nuclear-speckle section (jspeckles.py, v6): n, then n x (cx, cy, cz, r) in nm.
+                     # Label SPK inside a sphere, within the nucleoplasm only (not nucleolus / pore); no membrane.
 CR_W = 10.0          # crista: half the IM midsurface separation across the intracristal lumen
 CR_GAP = 12.0        # lamellae end this far inside the inner boundary membrane (junction ribbons bridge the gap)
 CR_JW = 10.0         # junction ribbon half-width
@@ -102,6 +105,18 @@ def in_pore(px, py, pz, pores, rc):
             continue
         rx = vx - z * pores[k, 3]; ry = vy - z * pores[k, 4]; rz = vz - z * pores[k, 5]
         if rx * rx + ry * ry + rz * rz < rc * rc:
+            return k
+    return -1
+
+
+@nb.njit(cache=True, fastmath=True)
+def in_speckle(px, py, pz, G):
+    """index of the nuclear speckle sphere containing p, or -1 (section at G[G_SPECKLE])"""
+    o = int(G[G_SPECKLE]); n = int(G[o])
+    for k in range(n):
+        q = o + 1 + 4 * k
+        dx = px - G[q]; dy = py - G[q + 1]; dz = pz - G[q + 2]
+        if dx * dx + dy * dy + dz * dz < G[q + 3] * G[q + 3]:
             return k
     return -1
 
@@ -176,6 +191,8 @@ def label_from(px, py, pz, G, pores, out, matrix):
             return PORE
         if n_fields(G) > F_NUCLEOLUS and field_sdf(px, py, pz, G, F_NUCLEOLUS) < 0:
             return NUCL
+        if G[G_SPECKLE] > 0.0 and in_speckle(px, py, pz, G) >= 0:
+            return SPK
         return NUCP
     if hp < 0:                                           # pore channel between midplane and ONM
         return PORE

@@ -13,6 +13,8 @@ export const F_CELL = 0, F_NE = 1, F_MITO = 2, F_ER = 3, F_GOLGI = 4, F_ENDO = 5
 // cristae header (word offsets from F.crOff): 0 n, 1-3 origin, 4 h, 5-7 dims, 8 B (cells per brick edge), 9-11 bricks,
 // 12 params offset (12 per mitochondrion), 13 brick index offset, 14 id data offset, 15 CR_W, 16 CR_GAP, 17 CR_JW
 export const CR_HDR = 32;
+// v6 nuclear speckles (geometry.json 'speckles', cell3d G_SPECKLE): loadFields appends them after the cristae header at
+// F.spOff (a multiple of 16; 0 = none): F[spOff] = n, then n x (cx, cy, cz, r) in nm.
 
 export function nFields(F: Float32Array | null): number { return F && F.length ? F[0] : 0; }
 
@@ -60,7 +62,10 @@ export async function loadFields(geo: any, fetchBin: (p: string) => Promise<Arra
   if (fd.total) total = fd.total;                     // v5: offsets aligned to 16 words (gaps between the sections)
   const cr = fd.cristae;
   const crOff = cr ? Math.ceil(total / 16) * 16 : 0;
-  const F = new Float32Array(cr ? crOff + CR_HDR : total);
+  const end = cr ? crOff + CR_HDR : total;
+  const sp: number[] = geo.speckles?.n > 0 ? geo.speckles.spheres : [];
+  const spOff = sp.length ? Math.ceil(end / 16) * 16 : 0;
+  const F = new Float32Array(sp.length ? spOff + 1 + sp.length : end);
   F[0] = n;
   let off = 0;
   for (let k = 0; k < n; k++) {
@@ -78,6 +83,8 @@ export async function loadFields(geo: any, fetchBin: (p: string) => Promise<Arra
     const c = cr.consts;
     F.set([cr.n, ...cr.origin, cr.h, ...cr.dims, cr.B, ...cr.nb, cr.off_par, cr.off_idx, cr.off_dat, c.CR_W, c.CR_GAP, c.CR_JW], crOff);
   }
+  if (sp.length) { F[spOff] = sp.length / 4; F.set(sp, spOff + 1); }
   (F as any).crOff = crOff;
+  (F as any).spOff = spOff;
   return F;
 }

@@ -673,7 +673,8 @@ fn fsMesh(in: VOut, @builtin(front_facing) ff: bool) -> FOut {
 export const FILL = COMMON + /* wgsl */ `
 @group(0) @binding(5) var<storage, read> palette: array<vec4f>;
 struct Prim { q0: vec4f, q1: vec4f, tc: vec4u };      // (yeast primitives; empty for Jurkat)
-// G0.w: open face on (model v5), G1.x: z of the open face, G1.y: offset of the cristae header in fields (0 = none)
+// G0.w: open face on (model v5), G1.x: z of the open face, G1.y: offset of the cristae header in fields (0 = none),
+// G1.z: offset of the nuclear-speckle section in fields (model v6; fields.ts F.spOff; 0 = none)
 struct Geo { G0: vec4f, G1: vec4f, G2: vec4f, consts: vec4f, grid: vec4f,       // consts: PORE_R, PERI_W, IMS_W, nPores
              nax: vec4f, nr0: vec4f, nr1: vec4f, nr2: vec4f };
 @group(1) @binding(0) var<storage, read> prims: array<Prim>;
@@ -741,6 +742,16 @@ fn cristaLumen(p: vec3f, b: f32) -> f32 {
   let w = abs(dot(vec3f(fields[q + 5u], fields[q + 6u], fields[q + 7u]), p - vec3f(fields[q + 8u], fields[q + 9u], fields[q + 10u]))) - fields[o + 17u];
   return min(lam, max(slab, w));
 }
+// cell3d.in_speckle: p inside a nuclear speckle sphere (section at o = G1.z: n, then n x (cx, cy, cz, r))
+fn inSpeckle(p: vec3f) -> bool {
+  let o = u32(geo.G1.z); let n = u32(fields[o]);
+  for (var k = 0u; k < n; k++) {
+    let q = o + 1u + 4u * k;
+    let v = p - vec3f(fields[q], fields[q + 1u], fields[q + 2u]); let r = fields[q + 3u];
+    if (dot(v, v) < r * r) { return true; }
+  }
+  return false;
+}
 // pore whose axis (through its centre along the NE normal) passes within rc of p: returns rho, or -1 (cell3d.in_pore)
 fn poreRho(p: vec3f, cell: u32, rc: f32) -> f32 {
   let n3 = u32(geo.grid.x * geo.grid.x * geo.grid.x);
@@ -788,7 +799,7 @@ fn memSdfs(p: vec3f) -> Mem {
   return m;
 }
 // labels (cell3d.label_from): 0 EXT, 1 CYTO, 2 PERI, 3 NUCP, 4 NUCL, 5 IMS, 6 MATRIX, 7 ERL, 8 GOLGI, 9 ENDO, 10 PORE,
-// 11 OUTV (below the open face: outside the imaged EM volume)
+// 11 OUTV (below the open face: outside the imaged EM volume), 12 SPK (nuclear speckle, model v6; fill colour palette 93)
 fn labelOf(p: vec3f, m: Mem) -> u32 {
   let PERI = geo.consts.y; let PORE_R = geo.consts.x;
   if (faceDist(p) < 0.0) { return 11u; }
@@ -798,6 +809,7 @@ fn labelOf(p: vec3f, m: Mem) -> u32 {
   if (hp < -0.5 * PERI) {
     if (hp > -PERI - 8.0 && poreRho(p, m.cell, PORE_R + 0.5 * PERI) >= 0.0) { return 10u; }
     if (fieldSdf(p, 6u) < 0.0) { return 4u; }   // nucleolus (1e9 when the build has no nucleolus field)
+    if (geo.G1.z > 0.5 && inSpeckle(p)) { return 12u; }   // nuclear speckle
     return 3u;
   }
   if (hp < 0.0) { return 10u; }                 // pore channel between the midplane and the ONM
@@ -827,7 +839,7 @@ struct FOut { @location(0) color: vec4f, @location(1) id: u32, @builtin(frag_dep
 fn shadeLabel(p: vec3f, o: ptr<function, FOut>, bands: bool) {
   let m = memSdfs(p);
   let lab = labelOf(p, m);
-  var c = palette[80u + lab].xyz;
+  var c = palette[select(80u + lab, 93u, lab == 12u)].xyz;   // (80 + 12 = 92 is the open-face grey)
   var id = 0x100u + lab;
   if (lab == 11u) { (*o).color = vec4f(palette[80u].xyz, 1.0); (*o).id = id; return; }   // outside the EM volume: not filled
   if (bands) {

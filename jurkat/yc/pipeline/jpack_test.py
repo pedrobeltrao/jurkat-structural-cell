@@ -27,12 +27,18 @@ VOX = 4.0; MESH_H = 8.0
 GOLGI_STACK_F = 4.5   # Golgi cisternal membrane area / smooth 16 nm blob area (cisternae ~25 nm thick: S/V ~80 um-1)
 CRISTAE_F = 3.0   # total IM area / OM area (cristae not built yet: only the inner-boundary share of IM proteins is packed)
 VOL_REG = [("cytosol", (c3.CYTO,)), ("nucleoplasm", (c3.NUCP,)), ("matrix", (c3.MATRIX,)), ("ER_lumen", (c3.ERL,)),
-           ("golgi_lumen", (c3.GOLGI,)), ("endo_lumen", (c3.ENDO,)), ("perinuclear", (c3.PERI,)), ("nucleolus", (c3.NUCL,))]
+           ("golgi_lumen", (c3.GOLGI,)), ("endo_lumen", (c3.ENDO,)), ("perinuclear", (c3.PERI,)), ("nucleolus", (c3.NUCL,)),
+           ("speckle", (c3.SPK,))]                                 # v6: nuclear speckles (jspeckles.py), index 8
 MEM_REG = [("PM", c3.M_PM), ("NE", c3.M_NE), ("ER", c3.M_ER), ("MITO_OM", c3.M_OM), ("MITO_IM", c3.M_IM), ("GOLGI", c3.M_GOLGI), ("ENDO", c3.M_ENDO)]
 # v5 shells: (name, membrane, allowed labels, side (+1 = cytoplasmic/nucleoplasmic side of the cell3d SDF), d0, d1 nm from the
 # membrane midsurface, rad: add the library's bounding radius to d1). Anchored proteins: centre within BR + 2 nm of the bilayer
 # surface (d1 = 2 + MEM_HALF); cortex 0-150 nm under the PM; lamina 0-25 nm from the INM surface on the nucleoplasmic side.
 _AH = lambda m: 2.0 + float(c3.MEM_HALF[m])
+NPC_D = 100.0         # nm: NPC-proximal band depth from the NE surface (cytoplasmic filaments ~50-100 nm, basket ~75-100 nm)
+NPC_LAT = 200         # nm: max distance of the centre from a pore axis. v6 test tiles at 150 / 60 nm: 41% placed, 99.5% on the
+                      # nuclear face, because the 7R5K cytoplasmic ring and filaments fill the cytoplasmic annulus
+PERIPH_D = 20.0       # nm: peripheral (non-anchored) binders: centre within BR + PERIPH_D of the bilayer surface (2-3 layers;
+                      # v6 test tiles with the anchored band BR + 2 nm: endosome shell 47% placed)
 SHELL_REG = [("sh_PM_cyto", c3.M_PM, (c3.CYTO,), 1.0, 0.0, _AH(c3.M_PM), 1),
              ("sh_PM_exo", c3.M_PM, (c3.EXT,), -1.0, 0.0, _AH(c3.M_PM), 1),
              ("sh_PM_cortex", c3.M_PM, (c3.CYTO,), 1.0, 0.0, 150.0, 0),
@@ -44,7 +50,15 @@ SHELL_REG = [("sh_PM_cyto", c3.M_PM, (c3.CYTO,), 1.0, 0.0, _AH(c3.M_PM), 1),
              ("sh_GOLGI_lumen", c3.M_GOLGI, (c3.GOLGI,), -1.0, 0.0, _AH(c3.M_GOLGI), 1),
              ("sh_ENDO_cyto", c3.M_ENDO, (c3.CYTO,), 1.0, 0.0, _AH(c3.M_ENDO), 1),
              ("sh_ENDO_lumen", c3.M_ENDO, (c3.ENDO,), -1.0, 0.0, _AH(c3.M_ENDO), 1),
-             ("sh_OM_cyto", c3.M_OM, (c3.CYTO,), 1.0, 0.0, _AH(c3.M_OM), 1)]
+             ("sh_OM_cyto", c3.M_OM, (c3.CYTO,), 1.0, 0.0, _AH(c3.M_OM), 1),
+             # v6 NPC-proximal shell: both faces of the NE (cytoplasmic and nucleoplasmic side, 0-NPC_D nm from the ONM/INM
+             # surface + the library radius), centre within NPC_LAT nm of a pore axis. The rad field carries the pore
+             # limit: rad = 1 | (NPC_LAT << 1) (pack3d: bit 0 = add BR, rad >> 1 = pore-axis distance limit in nm, 0 = none).
+             ("sh_NPC", c3.M_NE, (c3.CYTO, c3.NUCP), 1.0, 0.0, NPC_D + float(c3.MEM_HALF[c3.M_NE]), 1 | (NPC_LAT << 1)),
+             # v6 peripheral membrane binders (jinventory_v6 R3/R5), cytosolic side
+             ("sh_PM_periph", c3.M_PM, (c3.CYTO,), 1.0, 0.0, PERIPH_D + float(c3.MEM_HALF[c3.M_PM]), 1),
+             ("sh_ENDO_periph", c3.M_ENDO, (c3.CYTO,), 1.0, 0.0, PERIPH_D + float(c3.MEM_HALF[c3.M_ENDO]), 1),
+             ("sh_GOLGI_periph", c3.M_GOLGI, (c3.CYTO,), 1.0, 0.0, PERIPH_D + float(c3.MEM_HALF[c3.M_GOLGI]), 1)]
 NV = len(VOL_REG)
 NSH0 = NV + len(MEM_REG)                                  # first shell region index
 SOL = {"cytosol": "cytosol", "cytoskeleton": "cytosol", "peroxisome": "cytosol", "lipid_droplet": "cytosol", "unassigned": "cytosol",
@@ -54,12 +68,19 @@ SOL = {"cytosol": "cytosol", "cytoskeleton": "cytosol", "peroxisome": "cytosol",
        "nucleolus": "nucleolus", "pm_anchor_cyto": "sh_PM_cyto", "pm_anchor_exo": "sh_PM_exo", "cortex": "sh_PM_cortex",
        "lamina": "sh_NE_lamina", "ne_anchor_nuc": "sh_NE_nuc", "er_anchor_cyto": "sh_ER_cyto", "er_anchor_lumen": "sh_ER_lumen",
        "golgi_anchor_cyto": "sh_GOLGI_cyto", "golgi_anchor_lumen": "sh_GOLGI_lumen", "endo_anchor_cyto": "sh_ENDO_cyto",
-       "endo_anchor_lumen": "sh_ENDO_lumen", "om_anchor_cyto": "sh_OM_cyto"}
+       "endo_anchor_lumen": "sh_ENDO_lumen", "om_anchor_cyto": "sh_OM_cyto",
+       # v6 compartment keys (jinventory_v6.py)
+       "speckle": "speckle", "npc": "sh_NPC", "pm_periph_cyto": "sh_PM_periph", "endo_periph_cyto": "sh_ENDO_periph",
+       "golgi_periph_cyto": "sh_GOLGI_periph"}
 TMR = {"plasma_membrane": "PM", "nucleus": "NE", "nuclear_envelope": "NE", "mitochondrion": "MITO_IM", "er": "ER", "golgi": "GOLGI",
        "endolysosomal": "ENDO", "cytosol": "ER", "cytoskeleton": "ER", "peroxisome": "ER", "lipid_droplet": "ER", "unassigned": "ER", "secreted": "ER",
        "nucleolus": "NE", "pm_anchor_cyto": "PM", "pm_anchor_exo": "PM", "cortex": "PM", "lamina": "NE", "ne_anchor_nuc": "NE",
        "er_anchor_cyto": "ER", "er_anchor_lumen": "ER", "golgi_anchor_cyto": "GOLGI", "golgi_anchor_lumen": "GOLGI",
-       "endo_anchor_cyto": "ENDO", "endo_anchor_lumen": "ENDO", "om_anchor_cyto": "MITO_IM"}
+       "endo_anchor_cyto": "ENDO", "endo_anchor_lumen": "ENDO", "om_anchor_cyto": "MITO_IM", "speckle": "NE", "npc": "NE",
+       "pm_periph_cyto": "PM", "endo_periph_cyto": "ENDO", "golgi_periph_cyto": "GOLGI"}
+RNAMES_V5 = ["cytosol", "nucleoplasm", "matrix", "ER_lumen", "golgi_lumen", "endo_lumen", "perinuclear", "nucleolus", "PM", "NE", "ER",
+             "MITO_OM", "MITO_IM", "GOLGI", "ENDO", "sh_PM_cyto", "sh_PM_exo", "sh_PM_cortex", "sh_NE_lamina", "sh_NE_nuc", "sh_ER_cyto",
+             "sh_ER_lumen", "sh_GOLGI_cyto", "sh_GOLGI_lumen", "sh_ENDO_cyto", "sh_ENDO_lumen", "sh_OM_cyto"]   # job_region of pack v5
 RNAMES = [r[0] for r in VOL_REG] + [m[0] for m in MEM_REG] + [s_[0] for s_ in SHELL_REG]
 SHELL_MEMNAME = {s_[0]: [m[0] for m in MEM_REG][s_[1]] for s_ in SHELL_REG}   # shell -> membrane region (tile measure mem_<name>)
 

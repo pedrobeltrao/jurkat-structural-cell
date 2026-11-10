@@ -280,7 +280,7 @@ def pack_tile(seed, lo, size, halo,
     whose normal a thin lumen follows (-1 none). In such lumens half of the tries align the smallest axis with the local
     membrane normal (random spin), and a job gives up after LUMEN_GIVEUP_F x give_up failures in a row. Empty QFLAT
     disables this.
-    Regions >= n_shell0 are shells: shell s = reg - n_shell0 places a soluble ingredient with its centre at signed distance
+    Regions >= n_shell0 are shells (SH_RAD bit 0: add the bounding radius to the outer bound; SH_RAD >> 1: pore-axis limit, nm): shell s = reg - n_shell0 places a soluble ingredient with its centre at signed distance
     SH_SIGN[s] * u, u in [SH_D0[s], SH_D1[s] (+ BR if SH_RAD[s])], from membrane SH_MEM[s] (SDF sign convention of cell3d:
     + = cytoplasmic / nucleoplasmic / matrix side), all beads in labels SH_MASK[s] (bitmask) with membrane clearance."""
     np.random.seed(seed)
@@ -313,10 +313,11 @@ def pack_tile(seed, lo, size, halo,
         is_shell = reg >= n_shell0
         is_mem = reg >= n_mem_regions0 and not is_shell
         mi = reg - n_mem_regions0
-        sm = -1; sa = 0.0; sb = 0.0; ssg = 1.0; si = 0
+        sm = -1; sa = 0.0; sb = 0.0; ssg = 1.0; si = 0; plim = 0.0
         if is_shell:
             si = reg - n_shell0; sm = SH_MEM[si]; ssg = SH_SIGN[si]
-            sa = SH_D0[si]; sb = SH_D1[si] + (BR[li] if SH_RAD[si] else 0.0)
+            sa = SH_D0[si]; sb = SH_D1[si] + (BR[li] if (SH_RAD[si] & 1) else 0.0)
+            plim = float(SH_RAD[si] >> 1)                    # v6: > 0 = centre within plim nm of a pore axis (NPC shell)
             t0 = tri_off[sm]; t1 = tri_off[sm + 1]
             if t1 <= t0:
                 continue
@@ -372,6 +373,8 @@ def pack_tile(seed, lo, size, halo,
                         continue
                     u_ = ssg * mem_value(t[0], t[1], t[2], sm, G, pores, pidx, PT, PQ, PC, out)
                     if u_ < sa or u_ > sb:
+                        continue
+                    if plim > 0.0 and not near_pore(t, G, pores, plim):
                         continue
                     if not (QFLAT.shape[0] == n_types and np.random.random() < 0.5 and lumen_quat(t, sm, QFLAT[li], G, pores, pidx, PT, PQ, PC, out, nrm, q)):
                         rand_quat(q)

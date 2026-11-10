@@ -12,15 +12,17 @@ plasma membrane, cytoplasm, nuclear envelope and nucleus, re-centred on the orig
 faces. The Organelles and Membranes views show decimated surfaces of the entire cell for context (zoom out to see them).</p>
 <h3>Colours and controls</h3>
 <ul>
-<li>Cut faces are coloured by compartment (cytosol, nucleoplasm, nucleolus, perinuclear space, mitochondrial matrix and
-intermembrane space with the cristae, ER, Golgi and endo-lysosomal lumen), with membranes as light bands.</li>
+<li>Cut faces are coloured by compartment (cytosol, nucleoplasm, nucleolus, nuclear speckles, perinuclear space,
+mitochondrial matrix and intermembrane space with the cristae, ER, Golgi and endo-lysosomal lumen), with membranes as
+light bands.</li>
 <li><b>Flat bottom face = edge of the EM data.</b> The imaged FIB-SEM volume ends at the bottom of the cell and
 cuts it off (about 3–4% of the cell was not imaged). The model stops there: the face has no membrane, is drawn in
 flat grey (a grey line on cut faces), and nothing is modelled beyond it.</li>
 <li>Molecules are coloured by the compartment they were placed in; ribosomes are pink (rRNA darker), chromatin violet,
 microtubules green, actin orange, nuclear pores grey-blue. Nucleolar proteins are a deep violet; lipid-anchored
 proteins (on the side of their membrane given by the anchor; GPI-anchored ones outside the cell), the actin cortex
-under the plasma membrane and the nuclear lamina have their own shades (Colour by: Compartment lists them all).</li>
+under the plasma membrane and the nuclear lamina have their own shades, and nuclear speckle proteins are magenta
+(Colour by: Compartment lists them all).</li>
 <li>Lipids are generated in the browser near the camera on each membrane with one generic mammalian composition
 (PC 45%, PE 20%, SM 10%, PS 8%, PI 5%, other 12%; cholesterol is not drawn).</li>
 </ul>
@@ -47,17 +49,23 @@ there), procedural lamellar cristae in the mitochondria, lipid-anchored proteins
 shell under the plasma membrane for actin-binding proteins annotated there, the nuclear lamina under the inner nuclear
 membrane, transmembrane proteins and complexes routed to their membrane, and a nuclear pool for small proteins annotated
 in both nucleus and cytoplasm. The face where the EM volume truncates the cell is an open boundary without membrane.</p>
+<p><b>Model v6</b> adds nuclear speckles: membraneless spheres in the nucleoplasm (about 0.5 µm across, between the
+chromatin) holding proteins annotated to nuclear speckles, such as pre-mRNA splicing factors. It also adds a shell next
+to the nuclear pores, on both faces of the nuclear envelope, for nuclear transport receptors and pore basket proteins.
+These are shown with the nuclear pores.</p>
 <h3>Colours and controls</h3>
 <ul>
-<li>Cut faces are coloured by compartment (cytosol, nucleoplasm, nucleolus, perinuclear space, mitochondrial matrix and
-intermembrane space with the cristae, ER, Golgi and endo-lysosomal lumen), with membranes as light bands.</li>
+<li>Cut faces are coloured by compartment (cytosol, nucleoplasm, nucleolus, nuclear speckles, perinuclear space,
+mitochondrial matrix and intermembrane space with the cristae, ER, Golgi and endo-lysosomal lumen), with membranes as
+light bands.</li>
 <li><b>Flat bottom face = edge of the EM data.</b> The imaged FIB-SEM volume ends at the bottom of the cell and
 cuts it off (about 3–4% of the cell was not imaged). The model stops there: the face has no membrane, is drawn in
 flat grey (a grey line on cut faces), and nothing is modelled beyond it.</li>
 <li>Molecules are coloured by the compartment they were placed in; ribosomes are pink (rRNA darker), chromatin violet,
 microtubules green, actin orange, nuclear pores grey-blue. Nucleolar proteins are a deep violet; lipid-anchored
 proteins (on the side of their membrane given by the anchor; GPI-anchored ones outside the cell), the actin cortex
-under the plasma membrane and the nuclear lamina have their own shades (Colour by: Compartment lists them all).</li>
+under the plasma membrane and the nuclear lamina have their own shades, and nuclear speckle proteins are magenta
+(Colour by: Compartment lists them all).</li>
 <li>Lipids are generated in the browser near the camera on each membrane with one generic mammalian composition
 (PC 45%, PE 20%, SM 10%, PS 8%, PI 5%, other 12%; cholesterol is not drawn).</li>
 </ul>

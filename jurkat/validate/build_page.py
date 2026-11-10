@@ -15,7 +15,53 @@ REG_LABEL = {"cytosol": "Cytosol", "nucleoplasm": "Nucleoplasm", "nucleolus": "N
              "ER_lumen": "ER lumen", "golgi_lumen": "Golgi lumen", "endo_lumen": "Endo-lysosomal lumen",
              "perinuclear": "Perinuclear space", "PM": "Plasma membrane", "NE": "Nuclear envelope", "ER": "ER membrane",
              "MITO_OM": "Mito outer membrane", "MITO_IM": "Mito inner membrane", "GOLGI": "Golgi membrane",
-             "ENDO": "Endo-lysosomal membrane"}
+             "ENDO": "Endo-lysosomal membrane", "sh_PM_cyto": "PM inner-leaflet shell", "sh_PM_cortex": "Cortical shell",
+             "sh_NE_lamina": "Nuclear lamina shell", "sh_GOLGI_cyto": "Golgi cytosolic shell", "sh_ENDO_cyto": "Endo-lysosomal cytosolic shell",
+             "speckle": "Nuclear speckles", "sh_NPC": "NPC-proximal shell", "sh_PM_periph": "PM peripheral-binder shell",
+             "sh_ENDO_periph": "Endo-lysosomal peripheral shell", "sh_GOLGI_periph": "Golgi peripheral shell"}
+
+# version-specific text: fluorescence expectations (reference, verdict), notes and known issues
+FLUOR_EXPECT = {
+    "v4": {"CD3E": ("PM and ER (HPA Jurkat image: strong ER/perinuclear)", "part"), "CD28": ("PM (HPA Jurkat image)", "ok"),
+           "CD2": ("PM (HPA Jurkat image)", "ok"), "LCK": ("PM inner leaflet rim", "bad"), "GOLGA2": ("Golgi", "bad"),
+           "LMNB1": ("Nuclear rim (lamina)", "bad"), "TOMM20": ("Mitochondrial outer membrane", "part"),
+           "PGK1": ("Cytosol and nucleus", "bad"), "HSPA5": ("ER lumen", "ok"), "SELPLG": ("Intracellular puncta (HPA Jurkat image)", "bad")},
+    "v5": {"CD3E": ("PM and ER (HPA Jurkat image: strong ER/perinuclear)", "part"), "CD28": ("PM (HPA Jurkat image)", "ok"),
+           "CD2": ("PM (HPA Jurkat image)", "ok"), "LCK": ("PM inner leaflet rim, plus a pericentrosomal pool", "part"),
+           "GOLGA2": ("Golgi", "bad"), "LMNB1": ("Nuclear rim (lamina)", "ok"), "TOMM20": ("Mitochondrial outer membrane", "ok"),
+           "PGK1": ("Cytosol and nucleus", "bad"), "HSPA5": ("ER lumen", "ok"), "SELPLG": ("Intracellular puncta (HPA Jurkat image)", "bad")},
+    "v6": {"CD3E": ("PM and ER (HPA Jurkat image: strong ER/perinuclear)", "part"), "CD28": ("PM (HPA Jurkat image)", "ok"),
+           "CD2": ("PM (HPA Jurkat image)", "ok"), "LCK": ("PM inner leaflet rim, plus a pericentrosomal pool", "part"),
+           "GOLGA2": ("Golgi", "part"), "LMNB1": ("Nuclear rim (lamina)", "ok"), "TOMM20": ("Mitochondrial outer membrane", "ok"),
+           "PGK1": ("Cytosol and nucleus", "part"), "HSPA5": ("ER lumen", "ok"), "SELPLG": ("Intracellular puncta (HPA Jurkat image)", "bad")},
+}
+FLUOR_VERDICT = {"v4": "PM markers, ER lumen and mitochondria look right; anchored and lamina proteins do not.",
+                 "v5": "PM markers, ER lumen, mitochondria and the lamina look right; LCK now has a PM rim. Golgi proteins and some small soluble proteins are still wrong.",
+                 "v6": "As v5, plus a Golgi pool for GOLGA2 and nucleus/cytosol balance set from imaging categories. CD3 chains are still mostly at the PM (no ER support outside the Jurkat images, which are held out)."}
+LOC_NOTE = {"v4": "The Jurkat mass-weighted score is dominated by LCP1 (half of that set's mass), which is at the plasma membrane in Jurkat but soluble in the model.",
+            "v5": "The Jurkat mass-weighted score is dominated by LCP1 (half of that set's mass), now 73% in the cortical shell. Only OpenCell is a clean hold-out for v5: the cortex rule used HPA consensus annotations, including some test-half genes.",
+            "v6": "Clean hold-outs: OpenCell (never read by any rule) and a seeded random half of the Jurkat-imaged genes (v6 rules saw only a non-Jurkat HPA consensus for them). The HPA test half is not clean: v6 rules used the HPA consensus for all genes. Both versions are scored with the v6 accounting (pre-placed F-actin counts as cortex)."}
+FACE = {"v4": "The EM volume cuts the cell at one face; pack v4 still closes that face with a plasma membrane.",
+        "v5": "The EM volume cuts the cell at one face. Since v5 the model stops there with no membrane; extrapolating the side walls puts the missing cap at about 1% of the volume and 6% of the PM area."}
+FACE["v6"] = FACE["v5"]
+KNOWN = {
+    "v4": ["The EM volume cuts the cell at one face (about 3-4% of the cell missing). Pack v4 still puts a plasma membrane on that face; the next version leaves it open.",
+           "Lipid-anchored and lamina proteins are packed as soluble; the next version places them in thin shells on their membranes.",
+           "There is no nucleolus compartment; about 5 pg of nucleolar protein is spread through the nucleoplasm.",
+           "Small soluble proteins have no nuclear pool.",
+           "The packer jams in thin compartments (matrix, ER lumen); a GPU packer with compaction is planned."],
+    "v5": ["The Golgi cytosolic shell is only 35% placed: the procedural Golgi has about 1/4.5 of the real cisternal area. This keeps GOLGA2 cytosolic.",
+           "The nuclear lamina shell is 69% placed; lamins are long rods and need a dimer or lattice representation.",
+           "Peripheral proteins anchored only through partners (873 genes, e.g. coat and adaptor proteins) are still soluble; proteins over 60 kDa have no nuclear pool.",
+           "The nucleolus is capped at 110 mg/mL of protein, and rRNA is not modelled.",
+           "The packer still jams in thin compartments (matrix 71%, ER lumen 66%); a GPU packer with compaction is planned."],
+    "v6": ["CD3 chains stay mostly at the PM: the only ER/Golgi evidence is the Jurkat image of CD3E/CD3D, which is in the held-out half.",
+           "The NPC-proximal shell fills almost only on the nuclear face: the pre-placed NPC (7R5K) cytoplasmic ring and filaments occupy the cytoplasmic annulus.",
+           "Nuclear speckles are procedural (30 spheres of 0.5 µm at the most chromatin-poor sites; chromatin inside them was removed); there is no EM speckle label.",
+           "The Golgi is still a smoothed blob with 1/4.5 of the cisternal area; Golgi shells now pack at that modelled share (a cisternal stack is a v7 item).",
+           "The lamina shell is ~66% placed (lamin rods need a dimer/lattice model); the packer still jams in the matrix and ER lumen.",
+           "Tier 2 image ratios are compressed in the HPA images (antibody background, thin cytoplasm, many imaged genes not expressed in Jurkat): rim ratios hardly separate PM from cytosol, so they could not calibrate the cortex or peripheral shares (default 0.5 used)."],
+}
 
 
 def esc(s): return html.escape(str(s))
@@ -61,14 +107,41 @@ def table(df, cls="", num=()):
 
 
 def main():
-    ap = argparse.ArgumentParser(); ap.add_argument("--version", default="v4"); ap.add_argument("--prev", default="v3")
+    ap = argparse.ArgumentParser(); ap.add_argument("--version", default="v5"); ap.add_argument("--prev", default="v4")
     ap.add_argument("--out", default=f"{VAL}/validation.html"); a = ap.parse_args()
     S = json.load(open(f"{W}/summary_{a.version}.json")); P = json.load(open(f"{W}/summary_{a.prev}.json"))
     den = json.load(open(f"{VAL}/densities.json")); cr = json.load(open(f"{VAL}/crowding.json"))
     rnn = {r["set"]: r for r in json.load(open(f"{VAL}/ribosome_nn.json"))["rows"]}
-    ho = json.load(open(f"{VAL}/loc_holdout_baseline.json"))["sets"]
-    lc = pd.read_csv(f"{VAL}/loc_compare.tsv", sep="\t")
+    def vfile(stem, ext, v):   # per-version file if present; v4 results kept the original names
+        f = f"{VAL}/{stem}_{v}.{ext}"
+        return f if os.path.exists(f) else f"{VAL}/{stem}.{ext}"
+    hofile = lambda v: f"{VAL}/loc_holdout_{v}.json" if os.path.exists(f"{VAL}/loc_holdout_{v}.json") else f"{VAL}/loc_holdout_baseline.json"
+    ho = json.load(open(hofile(a.version)))["sets"]; hop = json.load(open(hofile(a.prev)))["sets"] if hofile(a.prev) != hofile(a.version) else None
+    lc = pd.read_csv(vfile("loc_compare", "tsv", a.version), sep="\t")
     fm = pd.read_csv(f"{VAL}/fluor_metrics.tsv", sep="\t")
+    # ---------- Tier 2 image metrics (tier2.py)
+    t2 = {v: json.load(open(f"{VAL}/tier2_{v}.json")) for v in (a.prev, a.version) if os.path.exists(f"{VAL}/tier2_{v}.json")}
+    tier2_html = ""
+    if a.version in t2:
+        rows2 = []
+        for setn, lab in (("holdout_half", "held-out half (clean)"), ("fit_half", "fit half")):
+            for m, ml in (("nc", "Nucleus/cytoplasm"), ("rim", "Rim/cytoplasm"), ("nuc_frac", "Share in nucleus"), ("punct", "Punctateness")):
+                cur = t2[a.version]["sets"][setn]["expected"].get(m, {}); prv = t2.get(a.prev, {}).get("sets", {}).get(setn, {}).get("expected", {}).get(m, {})
+                f_ = lambda d, k: f"{d[k]:.2f}" if d.get(k) is not None else "–"
+                rows2.append([lab, ml, str(cur.get("n", "")), f_(prv, "spearman"), f_(cur, "spearman"), f_(prv, "class_agree"), f_(cur, "class_agree"),
+                              f_(prv, "agree_2fold_cal"), f_(cur, "agree_2fold_cal")])
+        t2tab = pd.DataFrame(rows2, columns=["Genes", "Metric", "n", f"Spearman {a.prev}", f"Spearman {a.version}", f"Class agreement {a.prev}",
+                                             f"Class agreement {a.version}", f"Within 2-fold (calibrated) {a.prev}", f"Within 2-fold (calibrated) {a.version}"])
+        tr = t2[a.version]["transfer"]
+        tier2_html = (f"<p>The same segmentation runs on the {t2[a.version]['hpa_cells']:,} HPA Jurkat cells ({t2[a.version]['hpa_genes']} genes) and on "
+                      f"{t2[a.version]['model_sections']} simulated confocal sections of the model (blue = H2B, red = β-tubulin, green = the protein's "
+                      "expected image from its compartment shares). Per cell: nucleus/cytoplasm and rim/cytoplasm intensity ratios, the share of "
+                      "signal in the nucleus, and the share in spots. Rank correlation over genes is the main measure; class agreement uses "
+                      "enriched / similar / depleted (log₂ ±0.5).</p>" + table(t2tab, num=tuple(t2tab.columns[2:])) +
+                      f"<p class=\"meta\">Imaging transfer (fit half, frozen at v5): HPA N/C ≈ {tr['nc']['a']:.2f} + {tr['nc']['b']:.2f} × model "
+                      f"(r {tr['nc']['r']:.2f}); HPA rim ≈ {tr['rim']['a']:.2f} + {tr['rim']['b']:.2f} × model (r {tr['rim']['r']:.2f}). HPA ratios are "
+                      "compressed (antibody background, a 1-2 µm cytoplasmic ring, many imaged genes not expressed in Jurkat), so calibrated agreement "
+                      "is shown only where the slope is useful, and rim ratios barely separate plasma membrane from cytosol.</p>")
     db = pd.read_csv(f"{VAL}/diffusion_benchmark.tsv", sep="\t")
 
     # ---------- placement
@@ -98,10 +171,17 @@ def main():
     # ---------- localisation
     def hrow(key, name):
         s = ho[key]; ag = s["intended"]["agree"]; tp = s["intended"]["tophit"]
-        return [name, f"{s['n_genes']:,}", f"{ag['unweighted']:.2f}", f"{ag['mass_weighted']:.2f}", f"{tp['unweighted']:.2f}"]
-    htab = pd.DataFrame([hrow("opencell", "OpenCell, HEK293T endogenous tags"), hrow("hpa_test_half", "HPA, random half never used for fixes"),
-                         hrow("hpa_jurkat", "HPA images in Jurkat")],
-                        columns=["Held-out reference", "Genes", "Agreement", "Agreement, mass-weighted", "Top compartment correct"])
+        pv = f"{hop[key]['intended']['agree']['unweighted']:.2f}" if hop and key in hop else "–"
+        return [name, f"{s['n_genes']:,}", pv, f"{ag['unweighted']:.2f}", f"{ag['mass_weighted']:.2f}", f"{tp['unweighted']:.2f}"]
+    rows_ = [hrow("opencell", "OpenCell, HEK293T endogenous tags (clean)")]
+    if "hpa_jurkat_holdout_half" in ho:
+        rows_ += [hrow("hpa_jurkat_holdout_half", "HPA Jurkat images, held-out half (clean)"),
+                  hrow("hpa_jurkat_fit_half", "HPA Jurkat images, fit half (used to calibrate)"),
+                  hrow("hpa_test_half", "HPA consensus, md5 test half (not clean)")]
+    else:
+        rows_ += [hrow("hpa_test_half", "HPA, random half never used for fixes"), hrow("hpa_jurkat", "HPA images in Jurkat")]
+    htab = pd.DataFrame(rows_,
+                        columns=["Held-out reference", "Genes", f"Agreement, {a.prev}", "Agreement", "Agreement, mass-weighted", "Top compartment correct"])
     cl = lc.groupby("cause").agg(n=("gene", "size"), mass=("disagree_mass_pg", "sum"))
     causes = {"a_peripheral_or_lipid_anchored": "Lipid-anchored or peripheral, packed as soluble",
               "i_fractionation_nc_share": "Nucleus/cytosol split from fractionation data",
@@ -122,10 +202,7 @@ def main():
     # ---------- fluorescence: selected informative rows
     pick = ["CD3E", "CD28", "CD2", "LCK", "GOLGA2", "LMNB1", "TOMM20", "PGK1", "HSPA5", "SELPLG"]
     f = fm.set_index("protein").reindex([p for p in pick if p in set(fm.protein)])
-    expect = {"CD3E": ("PM and ER (HPA Jurkat image: strong ER/perinuclear)", "part"), "CD28": ("PM (HPA Jurkat image)", "ok"),
-              "CD2": ("PM (HPA Jurkat image)", "ok"), "LCK": ("PM inner leaflet rim", "bad"), "GOLGA2": ("Golgi", "bad"),
-              "LMNB1": ("Nuclear rim (lamina)", "bad"), "TOMM20": ("Mitochondrial outer membrane", "part"),
-              "PGK1": ("Cytosol and nucleus", "bad"), "HSPA5": ("ER lumen", "ok"), "SELPLG": ("Intracellular puncta (HPA Jurkat image)", "bad")}
+    expect = FLUOR_EXPECT.get(a.version, FLUOR_EXPECT["v5"])
     ftab = pd.DataFrame({"Protein": f.index, "Model: main compartment": [max(("PM", "cytosol", "nucleus", "ER", "mito", "golgi", "endolysosomal"), key=lambda c: r[f"mol_{c}"]) for _, r in f.iterrows()],
                          "PM/cytoplasm": f.pm_cyto.map("{:.1f}".format), "Nucleus/cytoplasm": f.nuc_cyto.map("{:.3f}".format),
                          "Reference": [expect[p][0] for p in f.index], "Verdict": [pill(expect[p][1]) for p in f.index]})
@@ -145,7 +222,7 @@ def main():
         ("Macromolecule concentration", "part", f"Cytosol {dr.set_index('region').mg_per_ml.get('cytosol', 0):.0f} mg/mL is in range; nucleus/cytosol {den['nuc_cyto_ratio']:.2f}; matrix and ER lumen are low."),
         ("Ribosome spacing", "ok", f"Nearest-neighbour median {th['nn_median']:.1f} nm in the model vs {em['nn_median']:.1f} nm in the EM; a random layout gives {jit['nn_median']:.1f} nm."),
         ("Localisation vs microscopy", "part", f"Agreement {ho['opencell']['intended']['agree']['unweighted']:.2f} with OpenCell and {ho['hpa_test_half']['intended']['agree']['unweighted']:.2f} with held-out HPA; systematic causes identified."),
-        ("Simulated fluorescence", "part", "PM markers, ER lumen and mitochondria look right; anchored and lamina proteins do not."),
+        ("Simulated fluorescence", "part", FLUOR_VERDICT.get(a.version, FLUOR_VERDICT["v5"])),
         ("Crowding and diffusion", "check", f"Frozen-crowd estimates only. A benchmark of {len(db)} measured D values ({nref} papers) is ready; mobile-crowder GPU simulation in progress."),
     ]
     vt = "".join(f'<tr><td>{esc(n)}</td><td>{pill(k)}</td><td>{esc(t)}</td></tr>' for n, k, t in verdicts)
@@ -225,11 +302,12 @@ code {{ font: 13px var(--mono); }}
 
 <section><h2>Cell and nuclear size</h2>
 <div class="stats">
- <div class="stat"><b>{Svol:.0f} µm³</b><span>cell volume (about 760 corrected for the face cut by the EM volume)</span></div>
+ <div class="stat"><b>{Svol:.0f} µm³</b><span>cell volume inside the EM block</span></div>
  <div class="stat"><b>{nvol:.0f} µm³</b><span>nucleus</span></div>
  <div class="stat"><b>36-38%</b><span>nuclear share of cell volume (other EM cells: 34-40%)</span></div>
 </div>
 <ul>
+ <li>{esc(FACE.get(a.version, FACE["v5"]))}</li>
  <li>Mid-plane nucleus:cell area ratio 55 ± 8% (Hoechst and phase contrast) converts to about 41% by volume: <b>agrees</b>.</li>
  <li>3D confocal reconstruction (Feng et al. 2014, Cytometry A) gives cell 664 ± 308 µm³ and nucleus 408 ± 199 µm³: the cell volume agrees; the nucleus is 1.5× ours, with a large spread.</li>
  <li>Automated counters report 12-13 µm diameters (900-1,150 µm³ as spheres), so this cell is at the small end, possibly from EM sample shrinkage.</li>
@@ -237,7 +315,7 @@ code {{ font: 13px var(--mono); }}
 </section>
 
 <section><h2>Macromolecule concentration</h2>
-<p>Protein and RNA mass per compartment volume, including pre-placed ribosomes and chromatin. The total inventory is 80 pg of protein, at the low end of estimates for this cell size.</p>
+<p>Protein and RNA mass per compartment volume, including pre-placed ribosomes and chromatin. The packer's target is {S['expected_pg']:.0f} pg; pre-placed ribosomes and chromatin come on top.</p>
 {table(dtab, num=("Volume (µm³)", "Macromolecules (pg)", "Model (mg/mL)"))}
 <p class="meta">Nucleus/cytosol density ratio {den['nuc_cyto_ratio']:.2f}. Matrix and ER lumen are low because the packer could not place all their target mass.</p>
 </section>
@@ -255,10 +333,14 @@ code {{ font: 13px var(--mono); }}
 
 <section><h2>Localisation against microscopy</h2>
 <p>Each protein's compartment shares in the model are compared with imaging annotations that were never used to build or fix the model. Agreement is 1 for a perfect match and 0 for disjoint compartments.</p>
-{table(htab, num=("Genes", "Agreement", "Agreement, mass-weighted", "Top compartment correct"))}
+{table(htab, num=("Genes", f"Agreement, {a.prev}", "Agreement", "Agreement, mass-weighted", "Top compartment correct"))}
 <p>Most disagreement comes from a few systematic causes rather than single-protein errors. These drive the next model version:</p>
 {cause_html}
-<p class="meta">The Jurkat mass-weighted score is dominated by LCP1 (half of that set's mass), which is at the plasma membrane in Jurkat but soluble in the model.</p>
+<p class="meta">{esc(LOC_NOTE.get(a.version, LOC_NOTE["v5"]))}</p>
+</section>
+
+<section><h2>Image metrics against HPA Jurkat images (Tier 2)</h2>
+{tier2_html or "<p>Not available for this version.</p>"}
 </section>
 
 <section><h2>Simulated fluorescence</h2>
@@ -277,13 +359,7 @@ code {{ font: 13px var(--mono); }}
 </section>
 
 <section><h2>Known issues and next version</h2>
-<ul>
- <li>The EM volume cuts the cell at one face (about 3-4% of the cell missing). Pack {esc(a.version)} still puts a plasma membrane on that face; the next version leaves it open.</li>
- <li>Lipid-anchored and lamina proteins are packed as soluble; the next version places them in thin shells on their membranes.</li>
- <li>There is no nucleolus compartment; about 5 pg of nucleolar protein is spread through the nucleoplasm.</li>
- <li>Small soluble proteins have no nuclear pool.</li>
- <li>The packer jams in thin compartments (matrix, ER lumen); a GPU packer with compaction is planned.</li>
-</ul>
+<ul>{"".join(f"<li>{esc(t)}</li>" for t in KNOWN.get(a.version, KNOWN["v5"]))}</ul>
 </section>
 </div>
 """

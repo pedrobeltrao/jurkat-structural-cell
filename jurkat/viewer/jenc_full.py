@@ -31,6 +31,9 @@ YCT1 tile binary as jenc.py / webenc.py) without ever holding the cell in memory
 * Model v5: tile job_region numbering = jpack_test.RNAMES (--regions v5), mapped to viewer region ids by
   jenc.region_map (v4 ids 0-17 kept, nucleolus 18, shells 19-30); the open face (cell3d G_FACE/G_ZFACE) is exported in
   geometry.json 'face', and membrane meshes are clipped there (jenc.clip_mesh).
+* Model v6: --regions v6 (default; jpack_test.RNAMES: speckle at pack index 8, shells shifted by one, + sh_NPC), mapped by
+  jenc.region_map (speckle = viewer id 31, sh_NPC -> NPC 17); --regions v5 = jpack_test.RNAMES_V5 for the archived v5
+  tiles. The nuclear speckles (cell3d G_SPECKLE spheres) are exported in geometry.json 'speckles' (n = 0 without them).
 * Resumable: each block writes its shard then a small JSON record in OUT_work/; finished blocks are skipped on rerun.
 
 usage: jenc_full.py --tiles DIR --libs libs.json --meta tiles_meta.json --parquet tiles.parquet --geom jgeom.npz
@@ -137,7 +140,7 @@ def geometry_json(cell, out, fields, cube_nm):
     return dict(kind="jurkat_fields", whole_cell=True, centre_nm=[0.0, 0.0, 0.0], cube_nm=cube_nm, R=float(cell.G[0]),
                 fields=fields, pores=cell.pores.round(4).ravel().tolist(),
                 consts=dict(PERI_W=c3.PERI_W, IMS_W=c3.IMS_W, PORE_R=c3.PORE_R, HALF=c3.HALF),
-                face=J.face_json(cell), label_names=c3.LABEL_NAMES, mem_names=J.MEM_NAMES, region_names=J.REGION_NAMES,
+                face=J.face_json(cell), speckles=J.speckles_json(cell), label_names=c3.LABEL_NAMES, mem_names=J.MEM_NAMES, region_names=J.REGION_NAMES,
                 label_rule=J.LABEL_RULE)
 
 
@@ -352,8 +355,9 @@ def main():
     ap.add_argument("--field-sp-thin", type=float, default=32.0, help="spacing of the ER, Golgi, endo and nucleolus fields")
     ap.add_argument("--field-sp-of", nargs="*", default=[], metavar="NAME=NM",
                     help="per-field spacing overrides, e.g. ne_mid=32 mito=32 (field names as cell3d.FIELD_NAMES)")
-    ap.add_argument("--regions", default="v5", choices=["v4", "v5"],
-                    help="job_region numbering of the packing tiles: v5 = jpack_test.RNAMES (default), v4 = jenc.RNAMES")
+    ap.add_argument("--regions", default=J.PACK_DEFAULT, choices=J.PACK_SCHEMES,
+                    help="job_region numbering of the packing tiles: v6 = jpack_test.RNAMES (default), v5 = jpack_test.RNAMES_V5, "
+                         "v4 = jenc.RNAMES")
     ap.add_argument("--fields-only", action="store_true", help="only rewrite geometry_fields.bin and geometry.json 'fields'")
     ap.add_argument("--only-slab", type=int, nargs="*"); ap.add_argument("--only-block", type=int, nargs=3)
     ap.add_argument("--bookmark-centre", type=float, nargs=3, default=[200.0, -3000.0, -1400.0],
@@ -368,7 +372,7 @@ def main():
     R_cell = float(cell.G[0]); zf = J.face_z(cell)
     log(f"geometry {a.geom}: R {R_cell:.0f} nm, {len(cell.pores)} pores, {J.n_fields_of(cell.G)} fields "
         f"({', '.join(c3.FIELD_NAMES[:J.n_fields_of(cell.G)])}), cristae {'yes' if J.cristae_section(cell.G) is not None else 'no'}, "
-        f"open face {'z = %.0f nm' % zf if zf is not None else 'no'}")
+        f"open face {'z = %.0f nm' % zf if zf is not None else 'no'}, {J.speckles_json(cell)['n']} speckles")
     sp_of = {kv.split("=")[0]: float(kv.split("=")[1]) for kv in a.field_sp_of}
     assert all(k in c3.FIELD_NAMES for k in sp_of), sp_of
     rmap = J.region_map(J.pack_rnames(a.regions))
@@ -475,7 +479,7 @@ def main():
 
 
 def extra_bookmarks(cell, step=150.0):
-    """v5 views: the largest nucleolus (section through its deepest point) and the open face (vertical section showing the
+    """v5/v6 views: the largest nucleolus (section through its deepest point) and the open face (vertical section showing the
     flat bottom where the EM volume truncates the cell)"""
     bm = []
     if J.n_fields_of(cell.G) > c3.F_NUCLEOLUS:
@@ -499,6 +503,13 @@ def extra_bookmarks(cell, step=150.0):
                        "There is no membrane on this face.",
                        target=[0.0, 0.0, round(zf + 2500.0, 3)], normal=[0, 1, 0], up=[0, 0, 1],
                        width=round(1.2 * float(cell.G[0]), 1), slab=60))
+    sp = np.array(J.speckles_json(cell)["spheres"]).reshape(-1, 4)
+    if len(sp):                                              # v6: the speckle with the most neighbours cut by the same z plane
+        dxy = np.linalg.norm(sp[:, None, :2] - sp[None, :, :2], axis=2); dz = np.abs(sp[:, None, 2] - sp[None, :, 2])
+        k = int(np.argmax(((dxy < 1500) & (dz < sp[None, :, 3] * 0.7)).sum(1)))
+        bm.append(dict(name="Nuclear speckles", caption="Nuclear speckles: membraneless bodies of the nucleoplasm rich in "
+                       "pre-mRNA splicing factors (SRSF, SON, SRRM2), between the chromatin; placed in the model as spheres.",
+                       target=[round(float(v), 3) for v in sp[k, :3]], normal=[0, 0, 1], up=[0, 1, 0], width=2400.0, slab=60))
     return bm
 
 

@@ -55,7 +55,8 @@ _R2C = {"cytosol": "cytosol", "nucleoplasm": "nucleus", "nucleolus": "nucleus", 
         "endo_lumen": "endolysosomal", "perinuclear": "NE", "PM": "PM", "NE": "NE", "ER": "ER", "MITO_OM": "mito", "MITO_IM": "mito",
         "GOLGI": "golgi", "ENDO": "endolysosomal", "sh_PM_cyto": "PM", "sh_PM_exo": "PM", "sh_PM_cortex": "PM", "sh_NE_lamina": "NE",
         "sh_NE_nuc": "NE", "sh_ER_cyto": "ER", "sh_ER_lumen": "ER", "sh_GOLGI_cyto": "golgi", "sh_GOLGI_lumen": "golgi",
-        "sh_ENDO_cyto": "endolysosomal", "sh_ENDO_lumen": "endolysosomal", "sh_OM_cyto": "mito"}
+        "sh_ENDO_cyto": "endolysosomal", "sh_ENDO_lumen": "endolysosomal", "sh_OM_cyto": "mito",
+        "speckle": "nucleus", "sh_NPC": "NE", "sh_PM_periph": "PM", "sh_ENDO_periph": "endolysosomal", "sh_GOLGI_periph": "golgi"}  # v6
 REG2COMP = np.array([COMPS.index(_R2C[r]) for r in RN])               # RN index -> COMPS index
 H = 40.0                       # grid (nm)
 PIX = 65.0                     # camera pixel (nm)
@@ -161,7 +162,9 @@ def load_points():
     pos, lib, reg = z["pos"], z["lib"], z["reg"]
     PL = json.load(open(f"{W}/prepass_libs.json")); Wp = chan_weights(PL)
     pt = np.load(f"{W}/prepass_types.npy", mmap_mode="r"); ppos = np.load(f"{W}/prepass_pos.npy", mmap_mode="r")
-    preg = np.array([1 if (l == "NUCLEOSOME" or l.startswith("H1-")) else RN.index("NE") if l == "NPC" else 0 for l in PL], np.int8)
+    # v6 accounting: pre-pass F-actin is cortical (8-150 nm under the PM) -> cortex shell region (PM compartment)
+    preg = np.array([1 if (l == "NUCLEOSOME" or l.startswith("H1-")) else RN.index("NE") if l == "NPC" else
+                     RN.index("sh_PM_cortex") if (l == "F_ACTB" and "sh_PM_cortex" in RN) else 0 for l in PL], np.int8)
     m = Wp.sum(1)[pt] > 0
     qpos = np.asarray(ppos[m], np.float32); qt = np.asarray(pt[m])
     out = {}
@@ -247,7 +250,7 @@ def add_noise(im, peak, ref, rng):
 def section_metrics(img, lab, c3, rng_noisy):
     from scipy.ndimage import distance_transform_edt, label as cclabel, white_tophat
     inside = ~np.isin(lab, [c3.EXT, c3.OUTV])
-    nuc = np.isin(lab, [c3.NUCP, c3.NUCL, c3.PERI, c3.PORE])
+    nuc = np.isin(lab, [c3.NUCP, c3.NUCL, c3.PERI, c3.PORE, getattr(c3, "SPK", c3.NUCP)])
     depth = distance_transform_edt(inside) * PIX; outd = distance_transform_edt(~inside) * PIX
     sd = np.where(inside, depth, -outd)                                   # signed depth (nm), + inside
     nd = distance_transform_edt(~nuc) * PIX; ndin = distance_transform_edt(nuc) * PIX
@@ -297,7 +300,7 @@ def show(ax, im, lab=None, c3=None, title=None, bar_um=5.0, vmax=None):
     ax.imshow(im.T, origin="lower", cmap=green_cmap(), vmin=np.percentile(im, 1), vmax=vmax, interpolation="nearest")
     if lab is not None:
         ax.contour((~np.isin(lab, [c3.EXT, c3.OUTV])).T.astype(float), [0.5], colors=["#888888"], linewidths=0.4, alpha=0.6)
-        ax.contour(np.isin(lab, [c3.NUCP, c3.NUCL, c3.PERI, c3.PORE]).T.astype(float), [0.5], colors=["#6b8fd6"],
+        ax.contour(np.isin(lab, [c3.NUCP, c3.NUCL, c3.PERI, c3.PORE, getattr(c3, "SPK", c3.NUCP)]).T.astype(float), [0.5], colors=["#6b8fd6"],
                    linewidths=0.4, alpha=0.6)
     L = bar_um * 1000 / PIX; ny = im.shape[1]
     ax.plot([im.shape[0] * 0.05, im.shape[0] * 0.05 + L], [ny * 0.06] * 2, color="white", lw=2)

@@ -280,3 +280,35 @@ Backups of every changed file: `*.bak_v4`.
   IMS 98.3% (crista lumens 99.4% IMS), Golgi 98.9%, endo 94.0%, ER lumen 84.8%, pore channel 71%, perinuclear 56%
   (34 nm wide at a 48 nm field; `--field-sp-of ne_mid=32` gives about 70% for +13 MB), outside_EM_volume 100%.
   Membrane triangles of tiles at the face: none below it. GPU size of the v5 fields: 51.2 M words = 205 MB (v4 173 MB).
+
+## Model v6 (2026-11-10): nuclear speckles, NPC-proximal shell, pack region scheme v6
+- **Region ids** (`jenc.REGION_NAMES`, `data.ts REGION_NAMES`, `check_data.py`): ids 0-30 unchanged; 31 = nuclear
+  speckle (the last id of the 5-bit region field). Pack v6 (`jpack_test.RNAMES`) puts `speckle` at pack index 8, so
+  the membranes and shells shift by one compared with v5, and adds the shell `sh_NPC` last. `jenc.pack_rnames('v6')` =
+  `jpack_test.RNAMES` (the new default of `--regions` in `jenc.py` / `jenc_full.py`), `'v5'` = the frozen
+  `jpack_test.RNAMES_V5` (archived v5 tiles), `'v4'` as before. `jenc.PACK_ALIAS` maps `sh_NPC` to the existing viewer
+  region `NPC` (17; shown as "nuclear pore (NPC and pore-proximal)"): the NPC-proximal shell holds nuclear transport
+  receptors and basket proteins next to the pores, and no free id is left.
+- **Speckle label** (cell3d label `speckle` = 12, `in_speckle`): `geometry.json` gets `speckles = {n, spheres: [cx, cy,
+  cz, r, ...]}` (`jenc.speckles_json`, viewer frame; n = 0 for geometry without speckles, G[4] = 0). `fields.ts
+  loadFields` appends them to F at `F.spOff` (a multiple of 16 after the cristae header; `F[spOff] = n`, then 4 values
+  per sphere). `prepareGeometry` puts spOff in `G[6]`, which is the fill uniform `Geo.G1.z`. `Geometry.inSpeckle` /
+  `labelFrom` (`L_SPK`) and WGSL `inSpeckle` / `labelOf` (12) test the spheres in the nucleoplasm branch after the
+  nucleolus, as `cell3d.label_from` does. Without speckles (spOff 0) the test is skipped. Older data folders (no
+  `speckles` key) work as before.
+- **Colours**: speckle region 31 `#C2408A` (magenta); speckle cut-face fill is palette 93 `#F2C9DF`. The shader maps
+  label 12 to 93 because 80 + 12 = 92 is the open-face grey. The speckle region is in `SOLUBLE_REGIONS`, the legend
+  ("nuclear speckle protein", when the build has it), the region list and the minimap.
+- **Bookmark** (`jenc_full.extra_bookmarks`): "Nuclear speckles" (z section through the speckle with the most
+  neighbours in the same plane).
+- **check_data.py**: speckle label and region; `load_fields` / `Geo.label` follow fields.ts / geometry.ts. `--ref` adds
+  stratified speckle points: 2 x `--strat` points in balls of 1.25 r around the spheres, inside and just outside. The
+  name check accepts older builds whose lists are a prefix of the current ones.
+- **Tests** (no GPU): `tsc --noEmit` is clean, naga-wasm validates every WGSL shader, and `build_web.sh` succeeds. The
+  fields of v6 geometry equal v5 (G differs only in G[4] plus the appended speckle section), so the v5 fields file was
+  reused with a v6 `geometry.json`. `check_data --fields-only --ref` (20,000 random + 2,000 per rare label): 99.62% of
+  random points and 98.81% inside the cell agree with cell3d. Speckle: 100% of 4,025 points, 2,000 points in the ball
+  just outside 100%, nucleolus 99.4%, with the other labels as in v5. The app's `geometry.ts` run in Node on 12,500
+  points (5,000 random, 6,000 in speckle balls, 1,500 nucleolus) gives 100% agreement with check_data and 99.72% with
+  cell3d (speckle balls 100%). The v5 data folder (no speckles) gives the same labels as before. The GPU shader test
+  was not run because the GPU was busy.
