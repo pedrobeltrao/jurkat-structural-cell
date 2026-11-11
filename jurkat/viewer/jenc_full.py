@@ -34,6 +34,12 @@ YCT1 tile binary as jenc.py / webenc.py) without ever holding the cell in memory
 * Model v6: --regions v6 (default; jpack_test.RNAMES: speckle at pack index 8, shells shifted by one, + sh_NPC), mapped by
   jenc.region_map (speckle = viewer id 31, sh_NPC -> NPC 17); --regions v5 = jpack_test.RNAMES_V5 for the archived v5
   tiles. The nuclear speckles (cell3d G_SPECKLE spheres) are exported in geometry.json 'speckles' (n = 0 without them).
+* Model v7: --regions v7 (jpack_test.RNAMES_V7; mt_lattice / mt_plus / pcm / vim_cage -> cytosol, sh_NPC_fg -> NPC, see
+  jenc.PACK_ALIAS). Cisternal Golgi: the deep Golgi SDF of the cisternae section is appended as field 7 ('golgi_deep',
+  resampled at --field-sp-deep, default 16 nm = native) and geometry.json consts carry GOLGI_W / GOLGI_S / CIS_CLR, so the
+  app evaluates cell3d.golgi_sdf and the intercisternal label GIC (13). Pre-pass lamins (lattice) -> sh_NE_lamina, the
+  chromatin functional layer (Pol II CPX-2387, CTCF, cohesin CPX-5989/5991) -> chromatin. mRNA: --mrna-drop (bead indices
+  removed by the v7 pack; threads are split there) and --mrna-extra (nascent RNA threads of the genome-mapped chromatin).
 * Resumable: each block writes its shard then a small JSON record in OUT_work/; finished blocks are skipped on rerun.
 
 usage: jenc_full.py --tiles DIR --libs libs.json --meta tiles_meta.json --parquet tiles.parquet --geom jgeom.npz
@@ -63,9 +69,11 @@ NB = int(BLK / VT)                                            # viewer tiles per
 PIECE, STEP = 64, 0.6                                         # mRNA piece length (points) and resampling step (nm)
 MR_Q = 0.005
 SPLIT_MB = 45.0                                               # files above this are split into parts (split.json)
-PRE_REG_OF = lambda n: (J.REGION_NAMES.index("chromatin") if (n == "NUCLEOSOME" or n.startswith("H1-")) else
+CHROMATIN_FUNC = ("CTCF", "CPX-2387", "CPX-5989", "CPX-5991")  # v7 chromatin functional layer (Pol II, CTCF, cohesin)
+PRE_REG_OF = lambda n: (J.REGION_NAMES.index("chromatin") if (n == "NUCLEOSOME" or n.startswith("H1-") or n in CHROMATIN_FUNC) else
                         J.REGION_NAMES.index("polysome_ribosome") if n.startswith("RIBO") else
-                        J.REGION_NAMES.index("NPC") if n.startswith("NPC") else J.REGION_NAMES.index("cytoskeleton"))
+                        J.REGION_NAMES.index("NPC") if n.startswith("NPC") else
+                        J.REGION_NAMES.index("sh_NE_lamina") if n.startswith("LMN") else J.REGION_NAMES.index("cytoskeleton"))
 log = J.log
 S = {}                                                        # state shared with forked workers (read-only)
 
@@ -95,23 +103,27 @@ def coarsen_plan(nbeads, budget):
 
 # ------------------------------------------------------------------ fields resampled for the whole cell
 @nb.njit(cache=False)
-def _eval_field(P, G, k):
+def _eval_field(P, G, o):
     out = np.empty(len(P), np.float32)
-    for i in range(len(P)): out[i] = c3.field_sdf(P[i, 0], P[i, 1], P[i, 2], G, k)
+    for i in range(len(P)): out[i] = c3.field_sdf_o(P[i, 0], P[i, 1], P[i, 2], G, o)
     return out
 
 
-def web_fields_whole(cell, out, sp=48.0, sp_thin=32.0, B=4, sp_of=None):
+def web_fields_whole(cell, out, sp=48.0, sp_thin=32.0, B=4, sp_of=None, sp_deep=16.0):
     """jenc.web_fields layout for the whole cell, resampled at sp nm (bricks of B voxels, (B+1)^3 nodes each); the
     fields of thin compartments (ER, Golgi, endo-lysosomal: sheets and vesicles of 30-100 nm) at sp_thin nm; sp_of
     overrides the spacing per field name (default: nucleolus at sp_thin, so the small nucleoli are kept). The cristae
-    section (cell3d.crista_lumen parameters + id grid) is appended as it is (no resampling)."""
+    section (cell3d.crista_lumen parameters + id grid) is appended as it is (no resampling). v7 cisternal Golgi: the deep
+    Golgi SDF of the cisternae section (header at G[G_GOLGI_CIS] + 2) follows as field 7 'golgi_deep' at sp_deep nm
+    (jenc.web_fields)."""
     G = cell.G; items = []; n1 = B + 1; sp_of = dict(sp_of or {})
-    for k, (bin_, bout) in enumerate(J.BANDS[:J.n_fields_of(G)]):
-        nm = c3.FIELD_NAMES[k]
-        sp_k = sp_of.get(nm, sp_thin if nm in ("mito", "er", "golgi", "endo", "nucleolus") else sp)
+    todo = [(k, c3.FIELD_NAMES[k], c3.G_N + 1 + 12 * k, band) for k, band in enumerate(J.BANDS[:J.n_fields_of(G)])]
+    if G.shape[0] > c3.G_GOLGI_CIS and G[c3.G_GOLGI_CIS] > 0 and len(todo) == 7:
+        oc = int(G[c3.G_GOLGI_CIS]); todo.append((7, "golgi_deep", oc + 2, (min(J.GOLGI_DEEP_BAND, float(G[oc + 2 + 8])), 40.0)))
+    for k, nm, o, (bin_, bout) in todo:
+        sp_k = sp_of.get(nm, sp_deep if nm == "golgi_deep" else sp_thin if nm in ("mito", "er", "golgi", "endo", "nucleolus") else sp)
         g = np.arange(n1) * sp_k; node = np.stack(np.meshgrid(g, g, g, indexing="ij"), -1).reshape(-1, 3)
-        o = c3.G_N + 1 + 12 * k; h = G[o:o + 12]
+        h = G[o:o + 12]
         org, sp0, nb0, B0 = h[0:3], h[3], h[4:7].astype(int), int(h[7])
         ext = nb0 * sp0 * B0; nbc = np.ceil(ext / (sp_k * B)).astype(int)
         idx = np.empty(int(np.prod(nbc)), np.int64); keep = []
@@ -119,7 +131,7 @@ def web_fields_whole(cell, out, sp=48.0, sp_thin=32.0, B=4, sp_of=None):
         for c0 in range(0, len(bricks), 20000):
             bb = bricks[c0:c0 + 20000]
             P = (org + bb[:, None, :] * sp_k * B + node[None]).reshape(-1, 3)
-            vals = _eval_field(P, G, k).reshape(len(bb), -1)
+            vals = _eval_field(P, G, o).reshape(len(bb), -1)
             mx, mn = vals.max(1), vals.min(1)
             for j in range(len(bb)):
                 if mx[j] <= -bin_: idx[c0 + j] = -1
@@ -139,9 +151,30 @@ def web_fields_whole(cell, out, sp=48.0, sp_thin=32.0, B=4, sp_of=None):
 def geometry_json(cell, out, fields, cube_nm):
     return dict(kind="jurkat_fields", whole_cell=True, centre_nm=[0.0, 0.0, 0.0], cube_nm=cube_nm, R=float(cell.G[0]),
                 fields=fields, pores=cell.pores.round(4).ravel().tolist(),
-                consts=dict(PERI_W=c3.PERI_W, IMS_W=c3.IMS_W, PORE_R=c3.PORE_R, HALF=c3.HALF),
+                consts=dict(PERI_W=c3.PERI_W, IMS_W=c3.IMS_W, PORE_R=c3.PORE_R, HALF=c3.HALF,     # + v7 cisternal Golgi (as jenc.py)
+                            GOLGI_W=float(cell.G[int(cell.G[c3.G_GOLGI_CIS])]) if cell.G[c3.G_GOLGI_CIS] > 0 else 0.0,
+                            GOLGI_S=float(cell.G[int(cell.G[c3.G_GOLGI_CIS]) + 1]) if cell.G[c3.G_GOLGI_CIS] > 0 else 0.0,
+                            CIS_CLR=c3.CIS_CLR),
                 face=J.face_json(cell), speckles=J.speckles_json(cell), label_names=c3.LABEL_NAMES, mem_names=J.MEM_NAMES, region_names=J.REGION_NAMES,
                 label_rule=J.LABEL_RULE)
+
+
+def load_threads(f, drop=None, extra=()):
+    """mRNA threads (off, pts) of f; v7: beads listed in drop removed (a thread is split where beads are missing, so no
+    segment bridges a removed bead), then the threads of the extra files appended"""
+    pm = np.load(f); off = pm["off"].astype(np.int64); pts = pm["pts"].astype(np.float32); del pm
+    if drop:
+        keep = np.ones(len(pts), bool); dr = np.load(drop); keep[dr] = False
+        start = np.zeros(len(pts), bool); start[off[:-1][np.diff(off) > 0]] = True
+        start[1:] |= ~keep[:-1]                                       # a kept bead after a removed one starts a new piece
+        start &= keep; ki = np.flatnonzero(keep)
+        off = np.r_[np.searchsorted(ki, np.flatnonzero(start)), len(ki)].astype(np.int64); pts = pts[ki]
+        log(f"mRNA: {len(dr):,} beads removed ({os.path.relpath(drop, V)}), {len(off) - 1:,} thread pieces")
+    for xf in extra or ():
+        z = np.load(xf); xo = z["off"].astype(np.int64); xp = z["pts"].astype(np.float32)
+        off = np.r_[off[:-1], xo + len(pts)]; pts = np.concatenate([pts, xp])
+        log(f"mRNA extra {os.path.relpath(xf, V)}: {len(xo) - 1:,} threads, {len(xp):,} points")
+    return off, pts
 
 
 # ------------------------------------------------------------------ mRNA pieces of one slab
@@ -346,6 +379,9 @@ def main():
     ap.add_argument("--geom", required=True); ap.add_argument("--out", required=True)
     ap.add_argument("--prepass", default=f"{D}/wc", help="folder with prepass_{off,types,pos,quat}.npy and prepass_libs.json")
     ap.add_argument("--mrna", default=f"{D}/prepass/mrna_cell1.npz")
+    ap.add_argument("--mrna-drop", help="v7: .npy of bead indices of --mrna removed by the pack (jwc 'mrna_drop'); threads split there")
+    ap.add_argument("--mrna-extra", nargs="*", default=[], help="v7: extra thread npz files (off/pts), e.g. nascent RNA")
+    ap.add_argument("--field-sp-deep", type=float, default=16.0, help="spacing of the v7 deep Golgi field (golgi_deep)")
     ap.add_argument("--ingredients", default=f"{D}/ingredients_v0.tsv")
     ap.add_argument("--uniprot", default=f"{V}/data/reference/uniprot_human_full.tsv.gz")
     ap.add_argument("--workers", type=int, default=6); ap.add_argument("--proxies", type=int, default=128)
@@ -374,13 +410,13 @@ def main():
         f"({', '.join(c3.FIELD_NAMES[:J.n_fields_of(cell.G)])}), cristae {'yes' if J.cristae_section(cell.G) is not None else 'no'}, "
         f"open face {'z = %.0f nm' % zf if zf is not None else 'no'}, {J.speckles_json(cell)['n']} speckles")
     sp_of = {kv.split("=")[0]: float(kv.split("=")[1]) for kv in a.field_sp_of}
-    assert all(k in c3.FIELD_NAMES for k in sp_of), sp_of
+    assert all(k in c3.FIELD_NAMES + ["golgi_deep"] for k in sp_of), sp_of
     rmap = J.region_map(J.pack_rnames(a.regions))
     log(f"pack regions ({a.regions}) -> viewer region ids: {dict(zip(J.pack_rnames(a.regions), rmap.tolist()))}")
     if a.fields_only:
         cube = (json.load(open(f"{out}/geometry.json"))["cube_nm"] if os.path.exists(f"{out}/geometry.json")
                 else 2 * math.ceil(R_cell / VT) * VT)
-        gj = geometry_json(cell, out, web_fields_whole(cell, out, sp=a.field_sp, sp_thin=a.field_sp_thin, sp_of=sp_of), cube)
+        gj = geometry_json(cell, out, web_fields_whole(cell, out, sp=a.field_sp, sp_thin=a.field_sp_thin, sp_of=sp_of, sp_deep=a.field_sp_deep), cube)
         json.dump(gj, open(f"{out}/geometry.json", "w"), separators=(",", ":"))
         sp = split_large(out); write_version(out)
         if os.path.exists(f"{out}/encode_meta.json"):
@@ -437,7 +473,7 @@ def main():
     if not a.skip_static:
         assert lib is not None
         write_library(a, out, ids, lib, stride, cnt[present], BR, MASS)
-        geo_fields = web_fields_whole(cell, out, sp=a.field_sp, sp_thin=a.field_sp_thin, sp_of=sp_of)
+        geo_fields = web_fields_whole(cell, out, sp=a.field_sp, sp_thin=a.field_sp_thin, sp_of=sp_of, sp_deep=a.field_sp_deep)
         half = math.ceil(max(np.abs(lo0).max(), R_cell) / VT) * VT
         json.dump(geometry_json(cell, out, geo_fields, 2 * half), open(f"{out}/geometry.json", "w"), separators=(",", ":"))
         J.organelle_meshes(cell, np.zeros(3), out)
@@ -450,7 +486,7 @@ def main():
     cell_blocks = np.unique(np.floor(inside / BLK).astype(np.int64), axis=0)
     log(f"{len(cell_blocks)} blocks meet the cell")
     # ---- shared state for the fork pool (pre-pass and mRNA in RAM: random reads on Lustre are slow)
-    pm = np.load(a.mrna); mr_off = pm["off"].astype(np.int64); mr_pts = pm["pts"].astype(np.float32); del pm
+    mr_off, mr_pts = load_threads(a.mrna, a.mrna_drop, a.mrna_extra)
     nthr = len(mr_off) - 1; lens = np.diff(mr_off); nz = lens > 0
     mr_xmin = np.full(nthr, np.inf); mr_xmax = np.full(nthr, -np.inf)
     st = mr_off[:-1][nz]
@@ -641,7 +677,11 @@ def assemble(a, out, work, NT, half, dt_total, n_total, coarsened, cell):
                 blocks=len(blocks), files=len(files), total_gb=round(float(sizes.sum()) / 1e9, 2),
                 largest=[os.path.relpath(big, out), int(sizes.max())], split=sp, coarsened=coarsened,
                 proxies_per_tile=a.proxies, field_sp_nm=a.field_sp, field_sp_thin_nm=a.field_sp_thin,
-                field_sp_of=a.field_sp_of, regions=a.regions, encode_s=round(dt_total))
+                field_sp_of=a.field_sp_of, field_sp_deep_nm=a.field_sp_deep, regions=a.regions,
+                prepass=os.path.relpath(a.prepass, V), mrna=os.path.relpath(a.mrna, V),
+                mrna_drop=os.path.relpath(a.mrna_drop, V) if a.mrna_drop else None,
+                mrna_extra=[os.path.relpath(x, V) for x in a.mrna_extra], ingredients=os.path.relpath(a.ingredients, V),
+                encode_s=round(dt_total))
     json.dump(meta, open(f"{out}/encode_meta.json", "w"), indent=1)
     log(f"done: {meta['files']} files, {meta['total_gb']} GB, largest {meta['largest']}")
 

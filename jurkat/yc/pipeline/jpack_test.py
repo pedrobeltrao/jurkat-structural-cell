@@ -59,6 +59,25 @@ SHELL_REG = [("sh_PM_cyto", c3.M_PM, (c3.CYTO,), 1.0, 0.0, _AH(c3.M_PM), 1),
              ("sh_PM_periph", c3.M_PM, (c3.CYTO,), 1.0, 0.0, PERIPH_D + float(c3.MEM_HALF[c3.M_PM]), 1),
              ("sh_ENDO_periph", c3.M_ENDO, (c3.CYTO,), 1.0, 0.0, PERIPH_D + float(c3.MEM_HALF[c3.M_ENDO]), 1),
              ("sh_GOLGI_periph", c3.M_GOLGI, (c3.CYTO,), 1.0, 0.0, PERIPH_D + float(c3.MEM_HALF[c3.M_GOLGI]), 1)]
+# v7 (opt-in: JWC_REGIONS=v7, set by the v7 jwc config; default = v6 numbering so archived v6 tiles, the viewer and the
+# validation code keep their region indices). Virtual volume regions: cytosol voxels selected by a distance rule
+# (jvirtual.py) instead of a label: MT-lattice band, MT plus-end band, pericentriolar material, perinuclear vimentin cage.
+# They sit after the label regions; jwc packs them before the label volume regions. New shells: sh_NPC_fg (central
+# FG channel and the axial cytoplasmic/basket zone, centre within NPC_FG_LAT nm of a pore axis, labels pore channel,
+# cytosol, nucleoplasm) for transport receptors docking in the pore; ENDO anchored band widened (ENDO_AH).
+REGIONS = os.environ.get("JWC_REGIONS", "v6")
+NPC_FG_LAT = 25       # nm: free central channel radius of the 7R5K scaffold model (~40-50 nm wide channel)
+ENDO_AH = 8.0         # nm (v7): Rab-type prenylated / lipid-anchored proteins on endosomes reach BR + 8 nm (hypervariable
+                      # C-terminal linker ~ 20-35 residues); v6 2 nm gave 0.75 placed (ENDO-cyto)
+VIRTUAL = []
+if REGIONS == "v7":
+    VIRTUAL = ["mt_lattice", "mt_plus", "pcm", "vim_cage"]
+    VOL_REG = VOL_REG + [(v, (c3.CYTO,)) for v in VIRTUAL]
+    SHELL_REG = [(n, m, (l + (c3.GIC,) if n in ("sh_GOLGI_cyto", "sh_GOLGI_periph") else l), sg, d0,
+                  (ENDO_AH + float(c3.MEM_HALF[c3.M_ENDO]) if n == "sh_ENDO_cyto" else d1), rd)
+                 for n, m, l, sg, d0, d1, rd in SHELL_REG]   # Golgi cytosolic shells also between cisternae (label GIC)
+    SHELL_REG.append(("sh_NPC_fg", c3.M_NE, (c3.PORE, c3.CYTO, c3.NUCP), 1.0, 0.0, NPC_D + float(c3.MEM_HALF[c3.M_NE]),
+                      1 | (NPC_FG_LAT << 1)))
 NV = len(VOL_REG)
 NSH0 = NV + len(MEM_REG)                                  # first shell region index
 SOL = {"cytosol": "cytosol", "cytoskeleton": "cytosol", "peroxisome": "cytosol", "lipid_droplet": "cytosol", "unassigned": "cytosol",
@@ -78,9 +97,14 @@ TMR = {"plasma_membrane": "PM", "nucleus": "NE", "nuclear_envelope": "NE", "mito
        "er_anchor_cyto": "ER", "er_anchor_lumen": "ER", "golgi_anchor_cyto": "GOLGI", "golgi_anchor_lumen": "GOLGI",
        "endo_anchor_cyto": "ENDO", "endo_anchor_lumen": "ENDO", "om_anchor_cyto": "MITO_IM", "speckle": "NE", "npc": "NE",
        "pm_periph_cyto": "PM", "endo_periph_cyto": "ENDO", "golgi_periph_cyto": "GOLGI"}
+if REGIONS == "v7":
+    SOL.update({"mt_lattice": "mt_lattice", "mt_plus": "mt_plus", "pcm": "pcm", "vim_cage": "vim_cage", "npc_fg": "sh_NPC_fg"})
+    TMR.update({"mt_lattice": "ER", "mt_plus": "ER", "pcm": "ER", "vim_cage": "ER", "npc_fg": "NE"})
 RNAMES_V5 = ["cytosol", "nucleoplasm", "matrix", "ER_lumen", "golgi_lumen", "endo_lumen", "perinuclear", "nucleolus", "PM", "NE", "ER",
              "MITO_OM", "MITO_IM", "GOLGI", "ENDO", "sh_PM_cyto", "sh_PM_exo", "sh_PM_cortex", "sh_NE_lamina", "sh_NE_nuc", "sh_ER_cyto",
              "sh_ER_lumen", "sh_GOLGI_cyto", "sh_GOLGI_lumen", "sh_ENDO_cyto", "sh_ENDO_lumen", "sh_OM_cyto"]   # job_region of pack v5
+RNAMES_V6 = (RNAMES_V5[:8] + ["speckle"] + RNAMES_V5[8:] + ["sh_NPC", "sh_PM_periph", "sh_ENDO_periph", "sh_GOLGI_periph"])
+RNAMES_V7 = RNAMES_V6[:9] + ["mt_lattice", "mt_plus", "pcm", "vim_cage"] + RNAMES_V6[9:] + ["sh_NPC_fg"]   # static (viewer)
 RNAMES = [r[0] for r in VOL_REG] + [m[0] for m in MEM_REG] + [s_[0] for s_ in SHELL_REG]
 SHELL_MEMNAME = {s_[0]: [m[0] for m in MEM_REG][s_[1]] for s_ in SHELL_REG}   # shell -> membrane region (tile measure mem_<name>)
 

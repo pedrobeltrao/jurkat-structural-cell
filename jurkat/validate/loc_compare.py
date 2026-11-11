@@ -36,7 +36,7 @@ def log(*a):
 # ----------------------------------------------------------------- model gene list
 def model_genes():
     """genes with copies > 0 in the model: ingredient gene tokens (histone families expanded to inventory members)"""
-    I = pd.read_csv(f"{D}/ingredients_v0.tsv", sep="\t")
+    I = pd.read_csv(os.environ.get("VAL_ING", f"{D}/ingredients_v0.tsv"), sep="\t")
     toks = {g for s in I.loc[I.copies > 0, "genes"].astype(str) for g in s.split(";")}
     V0 = pd.read_csv(f"{D}/inventory_v0.tsv", sep="\t")
     fam = {f: list(V0.gene[(V0.copies > 0) & V0.gene.astype(str).str.match(rf"^{f}(C|-)\d")]) for f in ("H2A", "H2B", "H3", "H4")}
@@ -181,6 +181,9 @@ SHELLS = ["sh_PM_cyto", "sh_PM_exo", "sh_PM_cortex", "sh_NE_lamina", "sh_NE_nuc"
           "sh_GOLGI_lumen", "sh_ENDO_cyto", "sh_ENDO_lumen", "sh_OM_cyto"]
 if VER == "v5":
     RN = RN[:7] + ["nucleolus"] + RN[7:] + SHELLS                         # v5 jpack_test.RNAMES
+elif VER == "v7":                                                         # v7 (JWC_REGIONS=v7): + virtual volume regions, + sh_NPC_fg
+    RN = (RN[:7] + ["nucleolus", "speckle", "mt_lattice", "mt_plus", "pcm", "vim_cage"] + RN[7:] + SHELLS
+          + ["sh_NPC", "sh_PM_periph", "sh_ENDO_periph", "sh_GOLGI_periph", "sh_NPC_fg"])
 elif VER != "v4":                                                         # v6: + speckle (volume) and the NPC-proximal shell
     RN = RN[:7] + ["nucleolus", "speckle"] + RN[7:] + SHELLS + ["sh_NPC", "sh_PM_periph", "sh_ENDO_periph", "sh_GOLGI_periph"]
 COMPS = ["PM", "cytosol", "nucleus", "NE", "ER", "mito", "golgi", "endolysosomal"]
@@ -192,8 +195,11 @@ REG2COMP = {"cytosol": "cytosol", "nucleoplasm": "nucleus", "matrix": "mito", "E
             "sh_ER_cyto": "ER", "sh_ER_lumen": "ER", "sh_GOLGI_cyto": "golgi", "sh_GOLGI_lumen": "golgi", "sh_ENDO_cyto": "endolysosomal",
             "sh_ENDO_lumen": "endolysosomal", "sh_OM_cyto": "mito",
             # v6: nuclear speckles are nuclear; the NPC-proximal shell (both faces of the NE, near pores) reads as nuclear rim
-            "speckle": "nucleus", "sh_NPC": "NE", "sh_PM_periph": "PM", "sh_ENDO_periph": "endolysosomal", "sh_GOLGI_periph": "golgi"}
-SOLUBLE = {"cytosol", "nucleoplasm", "matrix", "ER_lumen", "golgi_lumen", "endo_lumen", "perinuclear", "nucleolus", "speckle"}
+            "speckle": "nucleus", "sh_NPC": "NE", "sh_PM_periph": "PM", "sh_ENDO_periph": "endolysosomal", "sh_GOLGI_periph": "golgi",
+            # v7: virtual cytosol regions (MT bands, PCM, vimentin cage) read as cytosol; the NPC channel as nuclear rim
+            "mt_lattice": "cytosol", "mt_plus": "cytosol", "pcm": "cytosol", "vim_cage": "cytosol", "sh_NPC_fg": "NE"}
+SOLUBLE = {"cytosol", "nucleoplasm", "matrix", "ER_lumen", "golgi_lumen", "endo_lumen", "perinuclear", "nucleolus", "speckle",
+           "mt_lattice", "mt_plus", "pcm", "vim_cage"}
 # jpack_test.SOL / TMR (copied, not imported: analysis must not depend on pipeline import side effects)
 SOL = {"cytosol": "cytosol", "cytoskeleton": "cytosol", "peroxisome": "cytosol", "lipid_droplet": "cytosol", "unassigned": "cytosol",
        "plasma_membrane": "cytosol", "nucleus": "nucleoplasm", "nuclear_envelope": "nucleoplasm", "mitochondrion": "matrix",
@@ -202,13 +208,15 @@ SOL = {"cytosol": "cytosol", "cytoskeleton": "cytosol", "peroxisome": "cytosol",
        "lamina": "sh_NE_lamina", "ne_anchor_nuc": "sh_NE_nuc", "er_anchor_cyto": "sh_ER_cyto", "er_anchor_lumen": "sh_ER_lumen",
        "golgi_anchor_cyto": "sh_GOLGI_cyto", "golgi_anchor_lumen": "sh_GOLGI_lumen", "endo_anchor_cyto": "sh_ENDO_cyto",
        "endo_anchor_lumen": "sh_ENDO_lumen", "om_anchor_cyto": "sh_OM_cyto", "speckle": "speckle", "npc": "sh_NPC",
-       "pm_periph_cyto": "sh_PM_periph", "endo_periph_cyto": "sh_ENDO_periph", "golgi_periph_cyto": "sh_GOLGI_periph"}
+       "pm_periph_cyto": "sh_PM_periph", "endo_periph_cyto": "sh_ENDO_periph", "golgi_periph_cyto": "sh_GOLGI_periph",
+       "mt_lattice": "mt_lattice", "mt_plus": "mt_plus", "pcm": "pcm", "vim_cage": "vim_cage", "npc_fg": "sh_NPC_fg"}   # v7 keys
 TMR = {"plasma_membrane": "PM", "nucleus": "NE", "nuclear_envelope": "NE", "mitochondrion": "MITO_IM", "er": "ER", "golgi": "GOLGI",
        "endolysosomal": "ENDO", "cytosol": "ER", "cytoskeleton": "ER", "peroxisome": "ER", "lipid_droplet": "ER", "unassigned": "ER", "secreted": "ER",
        "nucleolus": "NE", "pm_anchor_cyto": "PM", "pm_anchor_exo": "PM", "cortex": "PM", "lamina": "NE", "ne_anchor_nuc": "NE",
        "er_anchor_cyto": "ER", "er_anchor_lumen": "ER", "golgi_anchor_cyto": "GOLGI", "golgi_anchor_lumen": "GOLGI",
        "endo_anchor_cyto": "ENDO", "endo_anchor_lumen": "ENDO", "om_anchor_cyto": "MITO_IM", "speckle": "NE", "npc": "NE",
-       "pm_periph_cyto": "PM", "endo_periph_cyto": "ENDO", "golgi_periph_cyto": "GOLGI"}
+       "pm_periph_cyto": "PM", "endo_periph_cyto": "ENDO", "golgi_periph_cyto": "GOLGI",
+       "mt_lattice": "ER", "mt_plus": "ER", "pcm": "ER", "vim_cage": "ER", "npc_fg": "NE"}
 PM_REGS = {"PM", "sh_PM_cyto", "sh_PM_exo", "sh_PM_cortex", "sh_PM_periph"}
 PRE_ING = {"NUCLEOSOME": "NUCLEOSOME", "NPC": "NPC", "RIBO80S": "RIBO80S", "MT_TUBA1B-TUBB4B": "TUBA1B-TUBB4B", "F_ACTB": "ACTB"}
 
@@ -218,6 +226,9 @@ def pre_region(lib):
     8-150 nm below the PM), so they count as the cortex shell (-> PM at light resolution, as the packed cortex); MT tubulin
     stays cytosol (HPA 'Microtubules' maps to cytosol)."""
     if VER != "v4" and lib == "F_ACTB": return "sh_PM_cortex"
+    if VER not in ("v4", "v5", "v6"):                           # v7: lamina lattice, chromatin functional layer (v8 chromatin)
+        if lib in ("LMNB1", "LMNB2", "LMNA"): return "sh_NE_lamina"
+        if lib in ("CPX-2387", "CTCF", "CPX-5989", "CPX-5991"): return "nucleoplasm"
     return "nucleoplasm" if (lib == "NUCLEOSOME" or lib.startswith("H1-")) else "NE" if lib == "NPC" else "cytosol"
 
 
@@ -251,7 +262,7 @@ def pack_arrays():
     if os.path.exists(cf):
         z = np.load(cf, allow_pickle=True); return z["req"], z["pla"], dict(zip(z["ids"], z["memb"]))
     os.makedirs(CACHE, exist_ok=True)
-    I = pd.read_csv(f"{D}/ingredients_v0.tsv", sep="\t"); libs = json.load(open(f"{W}/libs.json"))["libs"]
+    I = pd.read_csv(os.environ.get("VAL_ING", f"{D}/ingredients_v0.tsv"), sep="\t"); libs = json.load(open(f"{W}/libs.json"))["libs"]
     fs = sorted(glob.glob(f"{W}/tiles/*.npz")); chunks = [fs[i::64] for i in range(64)]
     req = np.zeros((len(libs), len(RN))); pla = np.zeros((len(libs), len(RN)))
     with mp.get_context("fork").Pool(7) as pool:
@@ -268,7 +279,7 @@ def pack_arrays():
 
 def model():
     """per-gene intended and placed copies per (source comp_weights key, model region)"""
-    I = pd.read_csv(f"{D}/ingredients_v0.tsv", sep="\t")
+    I = pd.read_csv(os.environ.get("VAL_ING", f"{D}/ingredients_v0.tsv"), sep="\t")
     V0 = pd.read_csv(f"{D}/inventory_v0.tsv", sep="\t").set_index("gene")
     L = json.load(open(f"{W}/libs.json")); libs = L["libs"]; consumed = L["consumed"]
     f_vol, f_pm = L.get("f_vol", 1.0), L.get("f_pm", 1.0)          # v5 open-face scaling (jwc.step_counts)
@@ -287,6 +298,9 @@ def model():
         cw = json.loads(r.comp_weights) if isinstance(r.comp_weights, str) else {}
         if not cw: cw = {"unassigned": 1.0}
         cons = float(consumed.get(r.ing_id, 0)); rest = max(r.copies - cons, 0.0)
+        if VER not in ("v4", "v5", "v6") and r.ing_id in ("LMNB1", "LMNB2", "LMNA") and cons > 0 and rest > 0 and "lamina" in cw:
+            # jwc consumed_key (v7): the lattice consumption comes out of the lamina key only
+            C_ = float(r.copies); cw = {k: (C_ * v / rest if k != "lamina" else max(C_ * v - cons, 0.0) / rest) for k, v in cw.items()}
         tm = bool(r.transmembrane) and memb.get(r.ing_id, False)
         ent = {}                                                # (src comp, region) -> [intended, placed]
         li = lidx.get(r.ing_id)
@@ -826,6 +840,12 @@ def _agg(df, sc_col, mass):
     return dict(unweighted=round(float(df[sc_col][m].mean()), 4), mass_weighted=round(float((df[sc_col][m] * w).sum() / w.sum()), 4)) if m.any() else None
 
 
+# v7+ (DECISION Pedro 2026-11-10): CD3E and CD3D are excluded from every hold-out score. Their v7 rule (R4b, TCR/CD3 ER and
+# endosome pools) was motivated by the held-out HPA-JURKAT disagreement, so they are no longer clean. Stated in the paper.
+HOLDOUT_EXCLUDE_V7 = {"CD3E", "CD3D"}
+HOLDOUT_EXCLUDE = HOLDOUT_EXCLUDE_V7 if VER not in ("v4", "v5", "v6") else set()
+
+
 def holdout():
     T = pd.read_csv(f"{OUT}/loc_compare{SFX}.tsv", sep="\t", index_col=0)
     S = sources(T); J = jurkat_refs()
@@ -835,6 +855,7 @@ def holdout():
     sets = {}
     rows = []
     for g in T.index:
+        if g in HOLDOUT_EXCLUDE: continue                    # v7+: CD3E / CD3D excluded (see HOLDOUT_EXCLUDE_V7)
         jh = jurkat_half(g)
         for name, q in (("hpa_jurkat", J.get(g, {}).get("q")), ("opencell", S[g].get("opencell", {}).get("q")),
                         (f"hpa_jurkat_{jh}_half" if jh else None, J.get(g, {}).get("q")),
@@ -882,6 +903,10 @@ def holdout():
         "v6 accounting (applied to the v5 baseline too): pre-pass F-actin counts as cortex (PM at light resolution); HPA 'Actin "
         "filaments' adds PM as a supporting (0.3) compartment. Clean hold-outs: opencell and hpa_jurkat_holdout_half. The base "
         "inventory (v0) used the pooled HPA consensus, which includes JURKAT, for all genes: a residual leak for the JURKAT halves."]
+    if HOLDOUT_EXCLUDE:
+        out["leakage_notes"].append(f"v7+: {sorted(HOLDOUT_EXCLUDE)} excluded from all hold-out sets (rule R4b was motivated by their "
+                                    "held-out HPA-JURKAT disagreement; DECISION Pedro 2026-11-10)")
+        out["excluded_genes"] = sorted(HOLDOUT_EXCLUDE)
     json.dump(out, open(f"{OUT}/loc_holdout_baseline.json" if VER == "v4" else f"{OUT}/loc_holdout{SFX}.json", "w"), indent=1)
     log(json.dumps({k: {m: v[m]["agree"] for m in ("intended", "placed") if m in v} | {"n": v["n_genes"], "pg": v["mass_pg"]}
                     for k, v in out["sets"].items()}, indent=1))

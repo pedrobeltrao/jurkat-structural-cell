@@ -22,9 +22,10 @@ import numpy as np
 import numba as nb
 
 # ----------------------------------------------------------------- labels / membranes
-EXT, CYTO, PERI, NUCP, NUCL, IMS, MATRIX, ERL, GOLGI, ENDO, PORE, OUTV, SPK = range(13)
+EXT, CYTO, PERI, NUCP, NUCL, IMS, MATRIX, ERL, GOLGI, ENDO, PORE, OUTV, SPK, GIC = range(14)
 LABEL_NAMES = ["exterior", "cytosol", "perinuclear", "nucleoplasm", "nucleolus", "mito_IMS", "mito_matrix",
-               "ER_lumen", "golgi_lumen", "endolysosomal_lumen", "pore_channel", "outside_EM_volume", "speckle"]
+               "ER_lumen", "golgi_lumen", "endolysosomal_lumen", "pore_channel", "outside_EM_volume", "speckle",
+               "golgi_intercisternal"]      # GIC (v7, cisternal Golgi only): cytosol between cisternae inside the EM Golgi blob
 M_PM, M_NE, M_ER, M_OM, M_IM, M_GOLGI, M_ENDO, M_OUTER = range(8)
 MEM_NAMES = ["PM", "NE", "ER", "MITO_OM", "MITO_IM", "GOLGI", "ENDO", "CELL_OUTER"]
 NMEM = 8
@@ -40,6 +41,12 @@ G_FACE = 2           # G[2] > 0: open boundary (EM-volume truncation face) at z 
 G_ZFACE = 3
 G_SPECKLE = 4        # G[4] > 0: offset of the nuclear-speckle section (jspeckles.py, v6): n, then n x (cx, cy, cz, r) in nm.
                      # Label SPK inside a sphere, within the nucleoplasm only (not nucleolus / pore); no membrane.
+G_GOLGI_CIS = 5      # G[5] > 0 (v7): offset of the Golgi cisternae section (jgolgi.py): W, S, then a 12-value field header
+                     # (absolute offsets) of a deep Golgi SDF (inside clamp >= 300 nm) and its brick index/data.
+                     # Inside the EM Golgi blob, lumen = layers parallel to the blob surface: depth d = -deep SDF,
+                     # v = d - W, w = v - S round(v / S), slab = |w| - W; GOLGI SDF = max(blob SDF, slab). The blob surface
+                     # is the outer membrane of the outermost cisterna; points between cisternae are cytosol.
+CIS_CLR = 10.0       # nm (v7): no Golgi cisternae within this distance of (or inside) a mitochondrion or the ER
 CR_W = 10.0          # crista: half the IM midsurface separation across the intracristal lumen
 CR_GAP = 12.0        # lamellae end this far inside the inner boundary membrane (junction ribbons bridge the gap)
 CR_JW = 10.0         # junction ribbon half-width
@@ -56,7 +63,27 @@ def n_fields(G):
 @nb.njit(cache=True, fastmath=True)
 def field_sdf(px, py, pz, G, k):
     """signed distance field k (negative inside): trilinear within a stored brick, +-clamp elsewhere"""
-    o = G_N + 1 + 12 * k
+    return field_sdf_o(px, py, pz, G, G_N + 1 + 12 * k)
+
+
+@nb.njit(cache=True, fastmath=True)
+def golgi_sdf(px, py, pz, G, other):
+    """GOLGI membrane SDF: the blob field, or (v7, G[G_GOLGI_CIS] > 0) the cisternal layers inside it. other = min of the
+    mito-OM and ER SDFs at p: where the blob overlaps those organelles (segmentation overlap; they take precedence in
+    label_from) or lies within CIS_CLR of them, the blob field is kept (no cisternae cutting their membranes)"""
+    g = field_sdf(px, py, pz, G, F_GOLGI)
+    if G[G_GOLGI_CIS] > 0.0 and g < 0.0 and other > CIS_CLR:
+        o = int(G[G_GOLGI_CIS]); W = G[o]; S = G[o + 1]
+        d = -field_sdf_o(px, py, pz, G, o + 2)
+        v = d - W
+        w = v - S * np.floor(v / S + 0.5)
+        g = max(g, abs(w) - W)
+    return g
+
+
+@nb.njit(cache=True, fastmath=True)
+def field_sdf_o(px, py, pz, G, o):
+    """field_sdf for the 12-value header at offset o"""
     h = G[o + 3]; B = int(G[o + 7])
     fx = (px - G[o]) / h; fy = (py - G[o + 1]) / h; fz = (pz - G[o + 2]) / h
     nbx = int(G[o + 4]); nby = int(G[o + 5]); nbz = int(G[o + 6])
@@ -171,7 +198,7 @@ def mem_sdfs(px, py, pz, G, pores, pidx, PT, PQ, PC, out):
         matrix = max(matrix, -crista_lumen(px, py, pz, G, matrix))
     out[M_IM] = -matrix
     out[M_ER] = field_sdf(px, py, pz, G, F_ER)
-    out[M_GOLGI] = field_sdf(px, py, pz, G, F_GOLGI)
+    out[M_GOLGI] = golgi_sdf(px, py, pz, G, min(om, out[M_ER]))
     out[M_ENDO] = field_sdf(px, py, pz, G, F_ENDO)
     return matrix
 
@@ -204,6 +231,8 @@ def label_from(px, py, pz, G, pores, out, matrix):
         return GOLGI
     if out[M_ENDO] < 0:
         return ENDO
+    if G[G_GOLGI_CIS] > 0.0 and field_sdf(px, py, pz, G, F_GOLGI) < 0.0:
+        return GIC                                        # v7: between cisternae inside the Golgi blob
     return CYTO
 
 

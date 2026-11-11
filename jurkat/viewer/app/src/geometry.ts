@@ -1,10 +1,10 @@
 // JavaScript port of the compartment geometry (same as the WGSL fill shader) for the minimap and picking.
 // Jurkat T cell: distance fields (fields.ts), nuclear pores, and (model v5) the nucleolus field, procedural cristae
 // and the open face, (model v6) the nuclear speckles (spheres); label rule = cell3d.mem_sdfs + cell3d.label_from of the Jurkat pipeline (jurkat/yc/pipeline/cell3d.py).
-import { F_CELL, F_NE, F_MITO, F_ER, F_GOLGI, F_ENDO, F_NUCLEOLUS, nFields, fieldSdf } from './fields';
+import { F_CELL, F_NE, F_MITO, F_ER, F_GOLGI, F_ENDO, F_NUCLEOLUS, F_GOLGI_DEEP, nFields, fieldSdf } from './fields';
 
 // label codes (data.LABEL_NAMES order = cell3d.LABEL_NAMES); L_OUTV: below the open face (outside the imaged EM volume)
-export const L_EXT = 0, L_CYTO = 1, L_PERI = 2, L_NUCP = 3, L_NUCL = 4, L_IMS = 5, L_MATRIX = 6, L_ERL = 7, L_GOLGI = 8, L_ENDO = 9, L_PORE = 10, L_OUTV = 11, L_SPK = 12;
+export const L_EXT = 0, L_CYTO = 1, L_PERI = 2, L_NUCP = 3, L_NUCL = 4, L_IMS = 5, L_MATRIX = 6, L_ERL = 7, L_GOLGI = 8, L_ENDO = 9, L_PORE = 10, L_OUTV = 11, L_SPK = 12, L_GIC = 13;
 // membrane codes (data.MEM_NAMES order = jenc.MEM_NAMES = face_mem)
 export const M_PM = 0, M_NE = 1, M_ER = 2, M_OM = 3, M_IM = 4, M_GOLGI = 5, M_ENDO = 6, NMEM = 7;
 
@@ -146,9 +146,21 @@ export class Geometry {
     if (this.crOff > 0 && matrix < this.F![this.crOff + 15]) matrix = Math.max(matrix, -this.cristaLumen(x, y, z, matrix));   // cristae
     d[M_IM] = -matrix;
     d[M_ER] = this.field(F_ER, x, y, z);
-    d[M_GOLGI] = this.field(F_GOLGI, x, y, z);
+    d[M_GOLGI] = this.golgiSdf(x, y, z, Math.min(om, d[M_ER]));   // model v7: cisternal Golgi (cell3d.golgi_sdf)
     d[M_ENDO] = this.field(F_ENDO, x, y, z);
     return { d, matrix, hp };
+  }
+  /** cell3d.golgi_sdf (model v7): blob field, or the cisternal layers inside it (deep field F_GOLGI_DEEP; W, S from consts)
+   *  except within CIS_CLR of mitochondria / ER (other = min of their SDFs) */
+  golgiSdf(x: number, y: number, z: number, other: number): number {
+    let g = this.field(F_GOLGI, x, y, z);
+    const c: any = this.c;
+    if (nFields(this.F) > F_GOLGI_DEEP && c.GOLGI_S > 0 && g < 0 && other > (c.CIS_CLR ?? 10)) {
+      const d = -this.field(F_GOLGI_DEEP, x, y, z), W = c.GOLGI_W, S = c.GOLGI_S;
+      const v = d - W, w = v - S * Math.floor(v / S + 0.5);
+      g = Math.max(g, Math.abs(w) - W);
+    }
+    return g;
   }
   /** cell3d.label_from */
   labelFrom(x: number, y: number, z: number, m: MemSdf): number {
@@ -168,6 +180,7 @@ export class Geometry {
     if (m.d[M_ER] < 0) return L_ERL;
     if (m.d[M_GOLGI] < 0) return L_GOLGI;
     if (m.d[M_ENDO] < 0) return L_ENDO;
+    if (nFields(this.F) > F_GOLGI_DEEP && this.field(F_GOLGI, x, y, z) < 0) return L_GIC;   // model v7: between cisternae
     return L_CYTO;
   }
   label(x: number, y: number, z: number): number {

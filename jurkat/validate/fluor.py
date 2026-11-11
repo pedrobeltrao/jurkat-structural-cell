@@ -56,7 +56,8 @@ _R2C = {"cytosol": "cytosol", "nucleoplasm": "nucleus", "nucleolus": "nucleus", 
         "GOLGI": "golgi", "ENDO": "endolysosomal", "sh_PM_cyto": "PM", "sh_PM_exo": "PM", "sh_PM_cortex": "PM", "sh_NE_lamina": "NE",
         "sh_NE_nuc": "NE", "sh_ER_cyto": "ER", "sh_ER_lumen": "ER", "sh_GOLGI_cyto": "golgi", "sh_GOLGI_lumen": "golgi",
         "sh_ENDO_cyto": "endolysosomal", "sh_ENDO_lumen": "endolysosomal", "sh_OM_cyto": "mito",
-        "speckle": "nucleus", "sh_NPC": "NE", "sh_PM_periph": "PM", "sh_ENDO_periph": "endolysosomal", "sh_GOLGI_periph": "golgi"}  # v6
+        "speckle": "nucleus", "sh_NPC": "NE", "sh_PM_periph": "PM", "sh_ENDO_periph": "endolysosomal", "sh_GOLGI_periph": "golgi",  # v6
+        "mt_lattice": "cytosol", "mt_plus": "cytosol", "pcm": "cytosol", "vim_cage": "cytosol", "sh_NPC_fg": "NE"}  # v7
 REG2COMP = np.array([COMPS.index(_R2C[r]) for r in RN])               # RN index -> COMPS index
 H = 40.0                       # grid (nm)
 PIX = 65.0                     # camera pixel (nm)
@@ -102,7 +103,7 @@ def log(*a):
 
 # ----------------------------------------------------------------- channel weights per library
 def ingredient_table():
-    I = pd.read_csv(f"{D}/ingredients_v0.tsv", sep="\t")
+    I = pd.read_csv(os.environ.get("VAL_ING", f"{D}/ingredients_v0.tsv"), sep="\t")
     return {r.ing_id: (str(r.genes).split(";"), [float(s) for s in str(r.stoich).split(";")]) for r in I.itertuples()}
 
 
@@ -163,7 +164,8 @@ def load_points():
     PL = json.load(open(f"{W}/prepass_libs.json")); Wp = chan_weights(PL)
     pt = np.load(f"{W}/prepass_types.npy", mmap_mode="r"); ppos = np.load(f"{W}/prepass_pos.npy", mmap_mode="r")
     # v6 accounting: pre-pass F-actin is cortical (8-150 nm under the PM) -> cortex shell region (PM compartment)
-    preg = np.array([1 if (l == "NUCLEOSOME" or l.startswith("H1-")) else RN.index("NE") if l == "NPC" else
+    preg = np.array([1 if (l == "NUCLEOSOME" or l.startswith("H1-") or l in ("CPX-2387", "CTCF", "CPX-5989", "CPX-5991")) else
+                     RN.index("sh_NE_lamina") if l in ("LMNB1", "LMNB2", "LMNA") else RN.index("NE") if l == "NPC" else
                      RN.index("sh_PM_cortex") if (l == "F_ACTB" and "sh_PM_cortex" in RN) else 0 for l in PL], np.int8)
     m = Wp.sum(1)[pt] > 0
     qpos = np.asarray(ppos[m], np.float32); qt = np.asarray(pt[m])
@@ -179,7 +181,7 @@ def load_points():
 def cell_geom():
     sys.path.insert(0, f"{V}/jurkat/yc/pipeline")
     import cell3d as c3
-    return c3, c3.Cell.load(f"{D}/jgeom_cell1.npz")
+    return c3, c3.Cell.load(os.environ.get("VAL_GEOM", f"{D}/jgeom_cell1.npz"))
 
 
 def grid_box():

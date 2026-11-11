@@ -22,10 +22,10 @@ def stats(P, name):
 
 def main():
     os.makedirs(OUT, exist_ok=True)
-    c = np.load(f"{D}/jgeom_cell1.npz")["centre_nm"]
+    c = np.load(os.environ.get("VAL_GEOM", f"{D}/jgeom_cell1.npz"))["centre_nm"]
     E = pd.read_parquet(f"{D}/ribo_seg_instances.parquet"); E = E[(E.cell2 == 1) & (E.cls != 2)]
     PE = E[["x", "y", "z"]].values * np.array([4.0, 4.0, 3.44]) - c
-    z = np.load(f"{D}/prepass/polysomes_cell1.npz"); PM = z["pos"].astype(np.float64); org = z["origin"]
+    z = np.load(os.environ.get("VAL_POLY", f"{D}/prepass/polysomes_cell1.npz")); PM = z["pos"].astype(np.float64); org = z["origin"]
     rng = np.random.default_rng(0)
     thin = PM[rng.random(len(PM)) < len(PE) / len(PM)]
     rows = [stats(PE, "EM (cell 1, non-nuclear)"), stats(PM, "model (all)"), stats(thin, "model thinned to EM count"),

@@ -12,7 +12,7 @@ spheretree.bin}, types_tiles.bin, geometry.json, geometry_fields.bin, organelle_
 version.json, encode_meta.json.  mRNA threads are encoded as polylines (resampled to 0.6 nm). Not encoded yet: linker DNA, per-membrane lipid compositions.
 usage: jenc.py [--cube 1600] [--centre x y z] [--tiles DIR] [--out DIR]"""
 import os, sys, json, gzip, time, argparse, math, shutil
-import numpy as np, pandas as pd
+import numpy as np, pandas as pd, numba as nb
 from skimage.measure import marching_cubes
 
 V = (__import__("os").environ.get("VCELL_ROOT", ".") + "")
@@ -38,7 +38,10 @@ V5_EXTRA = ["nucleolus", "sh_PM_cyto", "sh_PM_exo", "sh_PM_cortex", "sh_NE_lamin
 V6_EXTRA = ["speckle"]
 REGION_NAMES = RNAMES + PRE_REG + V5_EXTRA + V6_EXTRA
 assert len(REGION_NAMES) <= 32
-PACK_ALIAS = {"sh_NPC": "NPC", "sh_PM_periph": "sh_PM_cyto", "sh_ENDO_periph": "sh_ENDO_cyto", "sh_GOLGI_periph": "sh_GOLGI_cyto"}  # pack region -> viewer region of another name (v6: NPC shell -> NPC; peripheral shells share the anchored-shell ids)
+PACK_ALIAS = {"sh_NPC": "NPC", "sh_PM_periph": "sh_PM_cyto", "sh_ENDO_periph": "sh_ENDO_cyto", "sh_GOLGI_periph": "sh_GOLGI_cyto",
+              # v7 (jpack_test.RNAMES_V7): virtual cytosol regions (MT bands, PCM, vimentin cage) are cytosol at viewer level (no
+              # region id is left in the 5-bit field; the molecules keep their own types), the NPC channel shell is NPC
+              "mt_lattice": "cytosol", "mt_plus": "cytosol", "pcm": "cytosol", "vim_cage": "cytosol", "sh_NPC_fg": "NPC"}  # pack region -> viewer region of another name (v6: NPC shell -> NPC; peripheral shells share the anchored-shell ids)
 V4_PACK_RNAMES = RNAMES                                        # job_region numbering of packs v1-v4
 
 
@@ -53,7 +56,7 @@ def region_map(pack_rnames):
     return np.array(m, np.int64)
 
 
-PACK_SCHEMES = ["v4", "v5", "v6"]
+PACK_SCHEMES = ["v4", "v5", "v6", "v7"]
 PACK_DEFAULT = "v6"
 
 
@@ -63,7 +66,9 @@ def pack_rnames(which):
     if which == "v4": return list(V4_PACK_RNAMES)
     import jpack_test
     if which == "v5": return list(jpack_test.RNAMES_V5)
-    assert which in ("v6", "current"), which
+    if which == "v6": return list(jpack_test.RNAMES_V6)
+    if which == "v7": return list(jpack_test.RNAMES_V7)                # v7 pack (JWC_REGIONS=v7 numbering)
+    assert which == "current", which
     return list(jpack_test.RNAMES)
 
 
@@ -84,6 +89,7 @@ def clip_mesh(V_, F_, FM_, zf):
     return V_[used], remap[F_].astype(F_.dtype), FM_
 MEMS = [c3.M_PM, c3.M_NE, c3.M_ER, c3.M_OM, c3.M_IM, c3.M_GOLGI, c3.M_ENDO]      # face_mem = index in this list
 MEM_NAMES = ["PM", "NE", "ER", "MITO_OM", "MITO_IM", "GOLGI", "ENDO"]
+GOLGI_DEEP_BAND = 320.0         # v7: inside band of the exported deep Golgi field (cisternal depth)
 BANDS = [(180.0, 40.0), (100.0, 100.0), (40.0, 40.0), (40.0, 40.0), (40.0, 40.0), (40.0, 40.0), (40.0, 40.0)]   # per field (in, out) nm
 AL = 16                         # F offsets (geometry.json heads) are multiples of AL: float32 represents them exactly up to 2^28
 
@@ -191,8 +197,8 @@ def choose_centre(cell, cube, step=400.0):
 
 
 # ------------------------------------------------------------------ fields cropped to the cube
-def crop_field(G, k, lo, hi, band):
-    o = c3.G_N + 1 + 12 * k; h = G[o:o + 12]
+def crop_field(G, k, lo, hi, band, o=None):
+    o = c3.G_N + 1 + 12 * k if o is None else o; h = G[o:o + 12]        # o: a 12-value header anywhere in G (v7 cisternae)
     org, sp = h[0:3], h[3]; nb = h[4:7].astype(int); B = int(h[7]); n1 = B + 1
     idx = G[int(h[10]):int(h[10]) + int(np.prod(nb))].astype(np.int64).reshape(nb)
     data = G[int(h[11]):]
@@ -249,7 +255,7 @@ def write_fields_bin(out, items, cr):
         heads.append([float(x) for x in h10] + [float(io), float(do)])
         n_index.append(int(len(idx))); n_data.append(int(len(dat)))
         parts += [idx.astype("<i4").tobytes(), dat.astype("<i2").tobytes() + b"\0" * ((-2 * len(dat)) % 4)]
-    fd = dict(file="geometry_fields.bin", names=c3.FIELD_NAMES[:n], head=heads, n_index=n_index, n_data=n_data, q=FIELD_Q,
+    fd = dict(file="geometry_fields.bin", names=(c3.FIELD_NAMES + ["golgi_deep"])[:n], head=heads, n_index=n_index, n_data=n_data, q=FIELD_Q,
               layout="per field: int32 brick index (nbx*nby*nbz, x-major; -1 inside, -2 outside, else brick id), then int16 node "
                      "values ((B+1)^3 per brick, x-major) in q nm, padded to 4 bytes; head = origin xyz, spacing, nbx, nby, nbz, B, "
                      "clamp_in, clamp_out, idx_off, data_off (word offsets of the index and data in the app's Float32Array F, "
@@ -293,6 +299,13 @@ def web_fields(cell, C, cube, out):
     items = []
     for k, band in enumerate(BANDS[:n_fields_of(cell.G)]):
         org, sp, nb, B, idx, dat, cin, cout = crop_field(cell.G, k, lo, hi, band)
+        org = [org[i] - C[i] for i in range(3)]
+        items.append((org + [sp, float(nb[0]), float(nb[1]), float(nb[2]), float(B), band[0], band[1]], idx, dat))
+    if cell.G.shape[0] > c3.G_GOLGI_CIS and cell.G[c3.G_GOLGI_CIS] > 0 and len(items) == 7:
+        # v7 cisternal Golgi: the deep Golgi SDF of the cisternae section as field 7 ("golgi_deep"); the app evaluates
+        # cell3d.golgi_sdf (layers W/S, CIS_CLR) and the intercisternal label GIC (13) when the fields hold 8 entries
+        o = int(cell.G[c3.G_GOLGI_CIS]); band = (min(GOLGI_DEEP_BAND, float(cell.G[o + 2 + 8])), 40.0)
+        org, sp, nb, B, idx, dat, cin, cout = crop_field(cell.G, None, lo, hi, band, o=o + 2)
         org = [org[i] - C[i] for i in range(3)]
         items.append((org + [sp, float(nb[0]), float(nb[1]), float(nb[2]), float(B), band[0], band[1]], idx, dat))
     return write_fields_bin(out, items, cristae_section(cell.G, C))
@@ -457,7 +470,10 @@ def main():
     fields = web_fields(cell, C, a.cube, out)
     pores = cell.pores.copy(); pores[:, :3] -= C
     json.dump(dict(kind="jurkat_fields", centre_nm=C.tolist(), cube_nm=a.cube, R=float(cell.G[0]), fields=fields,
-                   pores=pores.round(4).ravel().tolist(), consts=dict(PERI_W=c3.PERI_W, IMS_W=c3.IMS_W, PORE_R=c3.PORE_R, HALF=c3.HALF),
+                   pores=pores.round(4).ravel().tolist(), consts=dict(PERI_W=c3.PERI_W, IMS_W=c3.IMS_W, PORE_R=c3.PORE_R, HALF=c3.HALF,
+                               GOLGI_W=float(cell.G[int(cell.G[c3.G_GOLGI_CIS])]) if cell.G[c3.G_GOLGI_CIS] > 0 else 0.0,
+                               GOLGI_S=float(cell.G[int(cell.G[c3.G_GOLGI_CIS]) + 1]) if cell.G[c3.G_GOLGI_CIS] > 0 else 0.0,
+                               CIS_CLR=c3.CIS_CLR),
                    face=face_json(cell, C), speckles=speckles_json(cell, C), label_names=lab_names, mem_names=MEM_NAMES, region_names=REGION_NAMES,
                    label_rule=LABEL_RULE), open(f"{out}/geometry.json", "w"), separators=(",", ":"))
     organelle_meshes(cell, C, out)
@@ -473,12 +489,23 @@ LABEL_RULE = ("cell3d.label_from (v6): outside_EM_volume below the open face (fa
               "if inside a speckles sphere, else nucleoplasm; mito: matrix if max(mito + IMS_W, -crista_lumen) < 0 else IMS; then ER, golgi, endo; else cytosol")
 
 
+@nb.njit(cache=False)
+def _field_pts(P, G, k):
+    out = np.empty(len(P), np.float32)
+    for i in range(len(P)): out[i] = c3.field_sdf(P[i, 0], P[i, 1], P[i, 2], G, k)
+    return out
+
+
 def organelle_meshes(cell, C, out, h=64.0):
     """whole-cell membrane meshes at h nm (context in the overview), shifted by -C; clipped at the open face"""
     R = cell.G[0]; g = np.arange(-R, R + h, h)
     X = np.stack(np.meshgrid(g, g, g, indexing="ij"), -1).reshape(-1, 3)
     S = np.empty((len(X), c3.NMEM), np.float32)
     for i in range(0, len(X), 4_000_000): S[i:i + 4_000_000] = cell.mems(X[i:i + 4_000_000])
+    if cell.G.shape[0] > c3.G_GOLGI_CIS and cell.G[c3.G_GOLGI_CIS] > 0:
+        # v7 cisternal Golgi: 20 nm cisternae alias at h = 64 nm; the context mesh shows the Golgi envelope (blob field = outer
+        # membrane of the outermost cisterna) instead
+        S[:, c3.M_GOLGI] = _field_pts(X, cell.G, c3.F_GOLGI)
     S = S.reshape(len(g), len(g), len(g), c3.NMEM); res = []
     for mi, m in enumerate(MEMS):
         if m == c3.M_IM: continue                              # at 64 nm the IM coincides with the OM

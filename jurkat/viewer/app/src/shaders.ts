@@ -771,6 +771,17 @@ fn gridCell(p: vec3f) -> u32 {
   let g = clamp(vec3i(floor((p + vec3f(ext)) / h)), vec3i(0), vec3i(i32(n) - 1));
   return (u32(g.x) * n + u32(g.y)) * n + u32(g.z);
 }
+// cell3d.golgi_sdf (model v7): the blob field (4), or inside it the cisternal layers of the deep field (7, present only
+// with the cisternal Golgi): W = 10, S = 40, CIS_CLR = 10 nm (cell3d / jgolgi constants; geometry.json consts GOLGI_W/S/CIS_CLR)
+fn golgiSdf(p: vec3f, other: f32) -> f32 {
+  var g = fieldSdf(p, 4u);
+  if (fields[0] > 7.5 && g < 0.0 && other > 10.0) {
+    let v = -fieldSdf(p, 7u) - 10.0;
+    let w = v - 40.0 * floor(v / 40.0 + 0.5);
+    g = max(g, abs(w) - 10.0);
+  }
+  return g;
+}
 // cell3d.mem_sdfs (negative = lumenal / non-cytoplasmic side)
 fn memSdfs(p: vec3f) -> Mem {
   var m: Mem;
@@ -794,7 +805,7 @@ fn memSdfs(p: vec3f) -> Mem {
   }
   m.d[4] = -m.matrix;                           // mito inner membrane
   m.d[2] = fieldSdf(p, 3u);                     // ER
-  m.d[5] = fieldSdf(p, 4u);                     // Golgi
+  m.d[5] = golgiSdf(p, min(om, m.d[2]));        // Golgi (model v7: cisternal layers, cell3d.golgi_sdf)
   m.d[6] = fieldSdf(p, 5u);                     // endo-lysosomal
   return m;
 }
@@ -817,6 +828,7 @@ fn labelOf(p: vec3f, m: Mem) -> u32 {
   if (m.d[2] < 0.0) { return 7u; }
   if (m.d[5] < 0.0) { return 8u; }
   if (m.d[6] < 0.0) { return 9u; }
+  if (fields[0] > 7.5 && fieldSdf(p, 4u) < 0.0) { return 13u; }   // model v7: Golgi intercisternal cytosol (GIC)
   return 1u;
 }
 // bit0: molecules loaded, bit1: overview stand-ins shown (whole-cell mode); either pushes the cut-face backdrop back
@@ -839,7 +851,7 @@ struct FOut { @location(0) color: vec4f, @location(1) id: u32, @builtin(frag_dep
 fn shadeLabel(p: vec3f, o: ptr<function, FOut>, bands: bool) {
   let m = memSdfs(p);
   let lab = labelOf(p, m);
-  var c = palette[select(80u + lab, 93u, lab == 12u)].xyz;   // (80 + 12 = 92 is the open-face grey)
+  var c = palette[select(select(80u + lab, 93u, lab == 12u), 81u, lab == 13u)].xyz;   // (80 + 12 = 92 is the open-face grey; GIC = cytosol fill)
   var id = 0x100u + lab;
   if (lab == 11u) { (*o).color = vec4f(palette[80u].xyz, 1.0); (*o).id = id; return; }   // outside the EM volume: not filled
   if (bands) {

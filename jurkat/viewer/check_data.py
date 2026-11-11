@@ -26,8 +26,9 @@ REGION_NAMES = ["cytosol", "nucleoplasm", "matrix", "ER_lumen", "golgi_lumen", "
                 "speckle"]
 MEM_NAMES = ["PM", "NE", "ER", "MITO_OM", "MITO_IM", "GOLGI", "ENDO"]
 LABEL_NAMES = ["exterior", "cytosol", "perinuclear", "nucleoplasm", "nucleolus", "mito_IMS", "mito_matrix", "ER_lumen",
-               "golgi_lumen", "endolysosomal_lumen", "pore_channel", "outside_EM_volume", "speckle"]
-OUTV, SPK = 11, 12
+               "golgi_lumen", "endolysosomal_lumen", "pore_channel", "outside_EM_volume", "speckle",
+               "golgi_intercisternal"]       # model v7 (cisternal Golgi; geometry.ts L_GIC)
+OUTV, SPK, GIC = 11, 12, 13
 CR_HDR = 32                          # fields.ts: cristae header words appended to F
 TILE, Q_ORG, QSTEP = 200.0, 80.0, 360.0 / 65535.0
 OFF_BITS = 26                       # shaders.ts draw-list offset width
@@ -122,6 +123,7 @@ def field_sdf(F, x, y, z, k):
 class Geo:
     def __init__(self, geo, F):
         self.F = F; c = geo["consts"]; self.PERI, self.IMS, self.PORE_R = c["PERI_W"], c["IMS_W"], c["PORE_R"]
+        self.GW, self.GS, self.CIS_CLR = c.get("GOLGI_W", 0.0), c.get("GOLGI_S", 0.0), c.get("CIS_CLR", 10.0)   # v7 cisternal Golgi
         fc = geo.get("face") or {}; self.face_on = bool(fc.get("on")); self.zf = float(fc.get("z", -1e9)) if self.face_on else -1e9
         self.crOff = getattr(F, "crOff", 0); self.spOff = getattr(F, "spOff", 0); self.nF = int(F[0])
         half = geo["cube_nm"] / 2; rc = self.PORE_R + 0.5 * self.PERI; reach = math.hypot(150, rc) + 2
@@ -157,8 +159,17 @@ class Geo:
         om = field_sdf(self.F, x, y, z, 2); d[3] = om; matrix = om + self.IMS
         if self.crOff and matrix < self.F[self.crOff + 15]: matrix = max(matrix, -self.crista_lumen(x, y, z, matrix))
         d[4] = -matrix
-        d[2] = field_sdf(self.F, x, y, z, 3); d[5] = field_sdf(self.F, x, y, z, 4); d[6] = field_sdf(self.F, x, y, z, 5)
+        d[2] = field_sdf(self.F, x, y, z, 3); d[5] = self.golgi_sdf(x, y, z, min(om, d[2])); d[6] = field_sdf(self.F, x, y, z, 5)
         return d, matrix, hp
+
+    def golgi_sdf(self, x, y, z, other):
+        """geometry.ts golgiSdf (= cell3d.golgi_sdf, model v7): blob field 4, or inside it the cisternal layers of the deep
+        field 7 (present only with the cisternal Golgi), except within CIS_CLR of mitochondria / ER"""
+        g = field_sdf(self.F, x, y, z, 4)
+        if self.nF > 7 and self.GS > 0 and g < 0 and other > self.CIS_CLR:
+            v = -field_sdf(self.F, x, y, z, 7) - self.GW; w = v - self.GS * math.floor(v / self.GS + 0.5)
+            g = max(g, abs(w) - self.GW)
+        return g
 
     def crista_lumen(self, x, y, z, b):
         """geometry.ts cristaLumen (= cell3d.crista_lumen) on the F layout of fields.ts"""
@@ -194,6 +205,7 @@ class Geo:
         if d[2] < 0: return 7
         if d[5] < 0: return 8
         if d[6] < 0: return 9
+        if self.nF > 7 and field_sdf(self.F, x, y, z, 4) < 0: return GIC     # model v7: between Golgi cisternae
         return 1
 
 
@@ -386,7 +398,7 @@ def main():
         # crista lumens: IMS points inside the boundary inner membrane (matrix SDF of the boundary < 0)
         mq = cell.mems(Q + C); lumen = (rq == c3.IMS) & (mq[:, c3.M_OM] + c3.IMS_W < 0)
         extra, tag = [], []
-        for L in (c3.NUCL, getattr(c3, "SPK", -99), c3.IMS, c3.MATRIX, c3.ERL, c3.GOLGI, c3.ENDO, c3.PERI, c3.PORE, c3.OUTV):
+        for L in (c3.NUCL, getattr(c3, "SPK", -99), getattr(c3, "GIC", -99), c3.IMS, c3.MATRIX, c3.ERL, c3.GOLGI, c3.ENDO, c3.PERI, c3.PORE, c3.OUTV):
             k = np.flatnonzero(rq == L)[:a.strat]; extra.append(Q[k]); tag += [LABEL_NAMES[L]] * len(k)
         k = np.flatnonzero(lumen)[:a.strat]; extra.append(Q[k]); tag += ["IMS: crista lumen"] * len(k)
         # v6 nuclear speckles: points in balls of 1.25 r around the geometry.json spheres (viewer frame), split by the

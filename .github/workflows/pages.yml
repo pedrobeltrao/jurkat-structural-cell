@@ -20,7 +20,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  DATA_BASE: ${{ vars.DATA_BASE || 'https://huggingface.co/datasets/pedrobeltrao/jurkat-structural-cell-data/resolve/main/web_full_v4/' }}
+  DATA_BASE: ${{ vars.DATA_BASE || 'https://huggingface.co/datasets/pedrobeltrao/jurkat-structural-cell-data/resolve/main/web_full_v7/' }}
 
 jobs:
   build:

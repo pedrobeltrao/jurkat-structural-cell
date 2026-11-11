@@ -44,6 +44,15 @@ LOC_NOTE = {"v4": "The Jurkat mass-weighted score is dominated by LCP1 (half of 
 FACE = {"v4": "The EM volume cuts the cell at one face; pack v4 still closes that face with a plasma membrane.",
         "v5": "The EM volume cuts the cell at one face. Since v5 the model stops there with no membrane; extrapolating the side walls puts the missing cap at about 1% of the volume and 6% of the PM area."}
 FACE["v6"] = FACE["v5"]
+FACE["v7"] = FACE["v5"]
+FLUOR_EXPECT["v7"] = dict(FLUOR_EXPECT["v6"])
+FLUOR_EXPECT["v7"].update({"CD3E": ("PM and ER (HPA Jurkat image: strong ER/perinuclear); excluded from hold-out scores from v7 on", "part"),
+                           "LMNB1": ("Nuclear rim (lamina)", "part")})
+FLUOR_VERDICT["v7"] = ("As v6, plus a juxta-centrosomal cisternal Golgi (GOLGA2 Golgi share 0.31 -> 0.48) and intracellular CD3 pools "
+                       "(ER 0.15, endosomes 0.16). LMNB1 is now 40% lamina lattice and 60% nucleoplasmic pool (the lattice holds 43% of the lamins), "
+                       "so its rim is weaker than in v6.")
+LOC_NOTE["v7"] = ("Clean hold-outs as v6 (OpenCell; seeded Jurkat-image half). CD3E and CD3D are excluded from every hold-out score "
+                  "from v7 on (their v7 rule was motivated by a held-out disagreement; DECISION Pedro 2026-11-10); the v6 numbers shown still include them.")
 KNOWN = {
     "v4": ["The EM volume cuts the cell at one face (about 3-4% of the cell missing). Pack v4 still puts a plasma membrane on that face; the next version leaves it open.",
            "Lipid-anchored and lamina proteins are packed as soluble; the next version places them in thin shells on their membranes.",
@@ -61,6 +70,11 @@ KNOWN = {
            "The Golgi is still a smoothed blob with 1/4.5 of the cisternal area; Golgi shells now pack at that modelled share (a cisternal stack is a v7 item).",
            "The lamina shell is ~66% placed (lamin rods need a dimer/lattice model); the packer still jams in the matrix and ER lumen.",
            "Tier 2 image ratios are compressed in the HPA images (antibody background, thin cytoplasm, many imaged genes not expressed in Jurkat): rim ratios hardly separate PM from cytosol, so they could not calibrate the cortex or peripheral shares (default 0.5 used)."],
+    "v7": ["Chromatin v8 (genome-mapped) misses TAD insulation (0.06), the P(s) slope (-1.29) and fine DAPI texture; fixes are listed as next steps.",
+           "Cytosol placement is 0.980 cell-wide (v6 0.983): the PCM / juxta-centrosomal Golgi tiles are locally capacity-limited.",
+           "ER lumen and matrix now pack at 0.82 / 0.86 (v6 0.66 / 0.71) but are still below 1; the lamina lattice holds only 43% of the lamins.",
+           "The NPC-proximal shell still fills mainly on the nuclear face; speckles remain procedural.",
+           "Tier 2 rim ratios still cannot calibrate cortex / peripheral shares (HPA Jurkat rims barely separate PM from cytosol)."]
 }
 
 
@@ -213,6 +227,22 @@ def main():
     # ---------- size
     Svol, nvol = 732.0, 276.0
 
+    # ---------- Brownian dynamics with mobile crowders (bd_summary.json, bd_results.md)
+    bd_html = ""
+    if os.path.exists(f"{VAL}/bd_summary.json"):
+        bd = json.load(open(f"{VAL}/bd_summary.json")); rr = pd.DataFrame(bd["ratios"])
+        within = (rr.model_over_measured.between(0.8, 1.25)).mean()
+        bd_html = f"""<h3>Brownian dynamics with moving crowders (pack {esc(bd['pack_version'])})</h3>
+<p>Each benchmark probe was simulated as its own structure among the packed molecules, all moving, in 500 nm boxes cut from the model (GPU, 100 µs). Corrections are physical, not fitted: a 0.3 nm hydration shell, fluid-phase viscosity 1.2× water, frozen polysomes.</p>
+<ul>
+ <li><b>Size ratios:</b> {100 * within:.0f}% of {len(rr)} within-paper size ratios are within 25% of measured; GFP tandem ratios are within 15%, and the largest dextrans and GEM particles slow down too steeply or too little.</li>
+ <li><b>Cytosolic GFP:</b> D/D₀ 0.42 (about 0.38 with finer crowder shapes) vs 0.31-0.34 measured; the 26S proteasome and matrix probes are in range.</li>
+ <li><b>Absolute D is too fast:</b> median 2.4× in cytosol, 3.4× in nucleus, about 10× for membrane proteins. The model has no binding, and nuclear proteins are slowed mostly by binding; membranes lack an actin fence.</li>
+ <li><b>ER lumen</b> is faster than cytosol in the model (measured about 3× slower), because only about 65% of its intended protein could be packed.</li>
+</ul>
+<figure><div class="frame" style="background:#fff"><img src="{img_uri(f'{VAL}/bd_model_vs_measured.png')}" alt="Scatter of simulated versus measured diffusion coefficients by compartment."></div>
+<figcaption>Simulated vs measured diffusion coefficients for the benchmark probes.</figcaption></figure>"""
+
     figs = {k: img_uri(f"{VAL}/{p}") for k, p in (("panel", "fluor_panel.png"), ("hpa", "fluor_hpa_jurkat.png"))}
 
     verdicts = [
@@ -223,7 +253,7 @@ def main():
         ("Ribosome spacing", "ok", f"Nearest-neighbour median {th['nn_median']:.1f} nm in the model vs {em['nn_median']:.1f} nm in the EM; a random layout gives {jit['nn_median']:.1f} nm."),
         ("Localisation vs microscopy", "part", f"Agreement {ho['opencell']['intended']['agree']['unweighted']:.2f} with OpenCell and {ho['hpa_test_half']['intended']['agree']['unweighted']:.2f} with held-out HPA; systematic causes identified."),
         ("Simulated fluorescence", "part", FLUOR_VERDICT.get(a.version, FLUOR_VERDICT["v5"])),
-        ("Crowding and diffusion", "check", f"Frozen-crowd estimates only. A benchmark of {len(db)} measured D values ({nref} papers) is ready; mobile-crowder GPU simulation in progress."),
+        ("Crowding and diffusion", "part", "Moving-crowder simulations reproduce size-dependent slow-down for GFP tandems and small dextrans (about half of all size ratios within 25%); absolute D is 2-3× too fast in solution and about 10× in membranes, consistent with missing binding."),
     ]
     vt = "".join(f'<tr><td>{esc(n)}</td><td>{pill(k)}</td><td>{esc(t)}</td></tr>' for n, k, t in verdicts)
 
@@ -355,7 +385,8 @@ code {{ font: 13px var(--mono); }}
 <section><h2>Crowding and diffusion</h2>
 <p>Estimated slow-down of a probe diffusing through the frozen crowd, with a hydrodynamic correction. These numbers test the calculation and how crowded each compartment is; they are not yet a validation, because the crowders do not move.</p>
 {table(ctab, num=("Volume fraction φ", "D/D₀, 1 nm probe", "D/D₀, GFP (2.3 nm)", "D/D₀, 3 nm probe"))}
-<p>Measured GFP diffusion in mammalian cytoplasm is about 25-33% of its value in water. A benchmark of {len(db)} measured diffusion coefficients from {nref} papers ({np.nanmin(dv):.2g} to {np.nanmax(dv):.3g} µm²/s; {int(db.cell_type.astype(str).str.contains('Jurkat', case=False).sum())} in Jurkat) is ready. It covers GFP size series, dextrans, large complexes and T-cell membrane proteins. The next step simulates each probe as its own structure with moving crowders on the GPU.</p>
+<p>Measured GFP diffusion in mammalian cytoplasm is about 25-33% of its value in water. A benchmark of {len(db)} measured diffusion coefficients from {nref} papers ({np.nanmin(dv):.2g} to {np.nanmax(dv):.3g} µm²/s; {int(db.cell_type.astype(str).str.contains('Jurkat', case=False).sum())} in Jurkat) is ready. It covers GFP size series, dextrans, large complexes and T-cell membrane proteins. </p>
+{bd_html}
 </section>
 
 <section><h2>Known issues and next version</h2>

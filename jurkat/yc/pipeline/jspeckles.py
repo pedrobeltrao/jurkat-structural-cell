@@ -9,7 +9,8 @@ Literature: 20-50 speckles per mammalian nucleus, 0.5-2 um, in interchromatin re
 Biol 3:a000646). We use the small end (0.5 um) as the volume the packer can fill at a moderate density.
 
 usage: NUMBA_NUM_THREADS=8 python jspeckles.py [n=30] [r_nm=250] [seed=5]
-Backs up nothing itself (run after copying jgeom_cell1.npz to jgeom_cell1_v5.npz); idempotent: an existing speckle
+v7: JGEOM / JCHROM env select the geometry file (rewritten in place) and the chromatin pre-pass; a Golgi cisternae
+section (jgolgi.py) after the speckle section is preserved. Backs up nothing itself (run after copying jgeom_cell1.npz to jgeom_cell1_v5.npz); idempotent: an existing speckle
 section is replaced (G is rebuilt from the part before it)."""
 import os, sys, json, time
 import numpy as np
@@ -21,15 +22,20 @@ N_SPK = int(sys.argv[1]) if len(sys.argv) > 1 else 30
 R_SPK = float(sys.argv[2]) if len(sys.argv) > 2 else 250.0
 SEED = int(sys.argv[3]) if len(sys.argv) > 3 else 5
 D_EDGE, D_SEP, H = 350.0, 1000.0, 100.0
+GEOM = os.environ.get("JGEOM", f"{D}/jgeom_cell1.npz")          # v7: JGEOM=data/derived/jgeom_cell1_v7.npz
+CHROM = os.environ.get("JCHROM", f"{D}/prepass/chromatin_cell1.npz")   # v7: the genome-mapped chromatin
 
 
 def main():
     t0 = time.time()
-    z = dict(np.load(f"{D}/jgeom_cell1.npz")); G = z["G"]; summ = json.loads(str(z["summary"]))
-    if G[c3.G_SPECKLE] > 0:                                    # replace an earlier section (it is the last one appended)
+    z = dict(np.load(GEOM)); G = z["G"]; summ = json.loads(str(z["summary"]))
+    gsec = None                                                # v7: a Golgi cisternae section appended after the speckles
+    if G[c3.G_GOLGI_CIS] > 0 and G[c3.G_GOLGI_CIS] > G[c3.G_SPECKLE] > 0:
+        go = int(G[c3.G_GOLGI_CIS]); gsec = G[go:].copy(); G = G[:go].copy(); G[c3.G_GOLGI_CIS] = 0.0
+    if G[c3.G_SPECKLE] > 0:                                    # replace an earlier section (the last one appended)
         G = G[: int(G[c3.G_SPECKLE])].copy(); G[c3.G_SPECKLE] = 0.0
     cell = c3.Cell(G, z["pores"])
-    ch = np.load(f"{D}/prepass/chromatin_cell1.npz"); ids = list(ch["lib_ids"])
+    ch = np.load(CHROM); ids = list(ch["lib_ids"])
     nuc = ch["pos"][ch["types"] == ids.index("NUCLEOSOME")].astype(np.float64)
     lo = nuc.min(0) - 500; hi = nuc.max(0) + 500; n = np.ceil((hi - lo) / H).astype(int)
     print(f"{len(nuc):,} nucleosomes; grid {n.tolist()} at {H:.0f} nm", flush=True)
@@ -62,6 +68,10 @@ def main():
     C = P[sel]
     sec = np.r_[float(len(sel)), np.c_[C, np.full(len(sel), R_SPK)].ravel()]
     G2 = np.r_[G, sec]; G2[c3.G_SPECKLE] = len(G)
+    if gsec is not None:                                       # re-append the Golgi section with its offsets shifted
+        import jgolgi
+        o = len(G2); W, S = gsec[0], gsec[1]; head = gsec[2:12]; ni = int(gsec[13] - gsec[12])
+        G2 = jgolgi.append_section(G2, head, gsec[14:14 + ni], gsec[14 + ni:], W, S)
     cell2 = c3.Cell(G2, z["pores"])
     # check: label volume by Monte Carlo inside the spheres and chromatin load
     u3 = rng.normal(size=(len(C), 400, 3)); q = (C[:, None, :] + R_SPK * np.cbrt(rng.random((len(C), 400, 1))) * u3 /
@@ -80,7 +90,7 @@ def main():
              source="procedural (no EM label): most chromatin-poor NUCP sites; jspeckles.py")
     summ["speckles"] = S
     z["G"] = G2; z["summary"] = np.array(json.dumps(summ))
-    tmp = f"{D}/jgeom_cell1.tmp.npz"; np.savez_compressed(tmp, **z); os.replace(tmp, f"{D}/jgeom_cell1.npz")
+    tmp = GEOM + ".tmp.npz"; np.savez_compressed(tmp, **z); os.replace(tmp, GEOM)
     print(json.dumps({k: v for k, v in S.items() if k != "centres_nm"}, indent=1), f"\n{time.time() - t0:.0f}s", flush=True)
 
 

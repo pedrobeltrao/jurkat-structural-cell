@@ -365,7 +365,9 @@ def compare():
                            "signal in the nucleus mask; punct: share of cell signal in top-hat spots. agree_2fold: |log2 model "
                            "- log2 HPA| <= 1; class: enriched (> +0.5) / similar / depleted (< -0.5) in log2; *_cal: after the "
                            "frozen affine imaging transfer. Primary = 'expected' model images; 'sampled' alongside.", sets={})
-    for name, sub in (("all", J), ("fit_half", J[J.split == "fit"]), ("holdout_half", J[J.split == "holdout"])):
+    excl = {"CD3E", "CD3D"} if VER not in ("v4", "v5", "v6") else set()   # v7+: excluded from hold-out scores (DECISION Pedro)
+    out["excluded_from_holdout"] = sorted(excl)
+    for name, sub in (("all", J), ("fit_half", J[J.split == "fit"]), ("holdout_half", J[(J.split == "holdout") & ~J.index.isin(excl)])):
         d = dict(n_genes=int(len(sub)))
         for mode, sfx in (("expected", "_model"), ("sampled", "_sampled")):
             dm = {}

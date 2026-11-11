@@ -1,7 +1,7 @@
 # Jurkat T cell model
 
-Jurkat T cell (OpenOrganelle jrc_jurkat-1, cell 1): a molecular model of the whole cell with ~960 million placed
-macromolecules (887 M packed plus 76 M pre-placed chromatin, polysome and cytoskeleton units). The viewer streams
+Jurkat T cell (OpenOrganelle jrc_jurkat-1, cell 1): a molecular model of the whole cell with ~950 million placed
+macromolecules (model v7: 880 M packed plus 70 M pre-placed chromatin, polysome, cytoskeleton, lamin and NPC units). The viewer streams
 either the whole cell (public site) or one 1.6 µm sub-volume (detail build) at residue resolution, plus whole-cell
 organelle outlines.
 
@@ -12,7 +12,7 @@ organelle outlines.
   loaded, the section shows overview stand-ins (about 100 molecules per tile, sampled by mass, enlarged and coloured
   by compartment). Copy numbers in the inspect panel are counts in the whole cell. The compartment fields for cut
   faces are sampled at 48 nm (cell, nuclear envelope) and 32 nm (mitochondria, ER, Golgi, endo-lysosomal,
-  nucleolus); membrane meshes per tile are 8 nm. The current data are model v5 (the viewer also reads model v6).
+  nucleolus); membrane meshes per tile are 8 nm. The current data are model v7 (the viewer also reads v4-v6 data).
 - **Sub-volume build** (`jenc.py`). A cube of 1.6 µm (8 x 8 x 8 tiles of 200 nm) chosen to contain plasma membrane, cytoplasm, nuclear
   envelope and nucleus (and mitochondria / ER where possible), re-centred on the origin (`jenc.py`).
 - **Molecules.** Every instance in the cube, as placed by the Jurkat packing pipeline, with its PDB or AlphaFold DB
@@ -40,6 +40,14 @@ organelle outlines.
   pore basket proteins fill a shell next to the nuclear pores, on both faces of the nuclear envelope, within 150 nm of a
   pore axis. The viewer has no separate compartment code left for it, so these proteins count as "nuclear pore (NPC and
   pore-proximal)".
+- **Model v7.** Genome-mapped chromatin (46 chains with genome coordinates; RNA polymerase II, CTCF and cohesin
+  pre-placed on it and shown as chromatin; nascent RNA drawn with the mRNA threads). A cisternal Golgi next to the
+  centrosome: inside the EM Golgi volume, lumen layers 20 nm thick every 40 nm parallel to its surface; the space
+  between cisternae is "Golgi intercisternal cytosol" (filled like cytosol). Microtubules traced in the EM volume. A
+  lamin rod lattice under the inner nuclear membrane (shown as nuclear lamina). The new packing regions for the
+  pericentriolar matrix, the vimentin cage and the microtubule-associated bands are shown as cytosol, and the NPC
+  channel shell as nuclear pore, because the 5-bit region code has no free id. The whole-cell context mesh shows the
+  Golgi envelope (cisternae are drawn in the 8 nm tile meshes only).
 - **Whole-cell context.** Organelle surfaces of the entire cell at 48 nm resolution (Organelles and Membranes views).
 - **Lipids.** Generated in the browser near the camera, generic mammalian composition (PC 45%, PE 20%, SM 10%,
   PS 8%, PI 5%, other 12%); cholesterol is not drawn.

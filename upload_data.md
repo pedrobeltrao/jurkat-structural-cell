@@ -92,3 +92,10 @@ Encode v5 into `data/derived/web_full_v5` (done on the cluster, see PLANNING_NOT
 v5 app also reads v4 data, so old links keep working with `?data=…/web_full_v4/`. The v5 build fixes a field-offset
 bug that mislabelled part of the Golgi in the v4 cut faces; re-encoding only the fields of v4 (`jenc_full.py
 --fields-only`) would fix the old data too.
+
+## Pack v7 (published 2026-11-11)
+
+`data/derived/web_full_v7` (2,367 files, 16.7 GB) was uploaded with
+`hf upload pedrobeltrao/jurkat-structural-cell-data data/derived/web_full_v7 web_full_v7 --repo-type dataset` (resumable:
+run it again after an interruption). The default `DATA_BASE` of the Pages workflow is now `…/resolve/main/web_full_v7/`.
+The v5 and v6 encodes were not uploaded. Old links keep working with `?data=…/web_full_v4/` or `?data=…/web_full_v3/`.

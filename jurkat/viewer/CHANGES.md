@@ -312,3 +312,22 @@ Backups of every changed file: `*.bak_v4`.
   points (5,000 random, 6,000 in speckle balls, 1,500 nucleolus) gives 100% agreement with check_data and 99.72% with
   cell3d (speckle balls 100%). The v5 data folder (no speckles) gives the same labels as before. The GPU shader test
   was not run because the GPU was busy.
+
+## Model v7 (2026-11-11): cisternal Golgi, genome-mapped chromatin, pack region scheme v7
+- **Pack regions** (`jenc.pack_rnames('v7')` = `jpack_test.RNAMES_V7`, 37 regions; encode with `--regions v7`). No viewer
+  region id is left (5-bit field), so `jenc.PACK_ALIAS` maps the new virtual cytosol regions `mt_lattice`, `mt_plus`, `pcm`
+  and `vim_cage` to cytosol (0) and the NPC channel shell `sh_NPC_fg` to NPC (17). The molecules keep their own types.
+- **Cisternal Golgi** (cell3d `G_GOLGI_CIS`, label 13 `golgi_intercisternal` = GIC). `jenc_full.web_fields_whole` now appends
+  the deep Golgi SDF of the cisternae section as field 7 `golgi_deep` (resampled at `--field-sp-deep`, default 16 nm, the
+  native spacing; inside clamp 320 nm), and `geometry.json` consts carry `GOLGI_W`, `GOLGI_S` and `CIS_CLR` (as `jenc.py`).
+  The app (`geometry.ts golgiSdf`, WGSL `golgiSdf`, label 13 filled like cytosol) was prepared on 2026-11-10.
+  `jenc.organelle_meshes`: the 64 nm whole-cell context mesh uses the Golgi blob field (the envelope), since 20 nm
+  cisternae alias at 64 nm; the 8 nm tile meshes show the cisternae.
+- **Pre-pass regions** (`jenc_full.PRE_REG_OF`): lamin lattice rods (`LMN*`) are `sh_NE_lamina` (22), and the chromatin
+  functional layer (Pol II `CPX-2387`, `CTCF`, cohesin `CPX-5989`/`CPX-5991`) is chromatin (14). Before, both would have
+  fallen through to cytoskeleton.
+- **mRNA** (`jenc_full.load_threads`): `--mrna-drop` removes the beads that the v7 pack removed (clashes with the traced
+  microtubules, centrioles and Golgi ribbon; `prepass_v7/mrna_drop.npy`), and splits a thread wherever beads are
+  missing. `--mrna-extra` appends the nascent RNA threads of the genome-mapped chromatin.
+- **encode_meta.json** records the pre-pass folder, the mRNA inputs and the ingredients table.
+- **check_data.py**: GIC label, `golgi_sdf` with field 7, and GIC in the stratified `--ref` points.

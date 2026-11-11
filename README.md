@@ -1,33 +1,38 @@
 # Jurkat structural cell
 
 A molecule-by-molecule structural model of a whole human Jurkat T cell (cell 1 of the OpenOrganelle FIB-SEM volume
-`jrc_jurkat-1`). It holds about 945 million macromolecules (870 M packed plus 75 M pre-placed chromatin, polysome
-and cytoskeleton units), each drawn from an experimental (PDB) or predicted (AlphaFold DB) structure. A WebGPU viewer streams the model into the browser at residue resolution.
+`jrc_jurkat-1`). It holds about 950 million macromolecules (880 M packed plus 70 M pre-placed chromatin, polysome,
+cytoskeleton, lamin and nuclear-pore units), each drawn from an experimental (PDB) or predicted (AlphaFold DB) structure. A WebGPU viewer streams the model into the browser at residue resolution.
 
 - **Viewer:** https://pedrobeltrao.github.io/jurkat-structural-cell/ (GitHub Pages, built from `jurkat/viewer/app`).
-- **Data:** https://huggingface.co/datasets/pedrobeltrao/jurkat-structural-cell-data. The site reads `web_full_v4/` (16.7 GB in
-  2,365 files, none larger than 34 MB); the earlier v3 pack stays in `web_full_v3/` (open it with `?data=`).
-- **Status:** work in progress. The newest pack is **v5** (encoded as `web_full_v5/`; the site switches to it once that
-  folder is uploaded and `DATA_BASE` is set, see `upload_data.md`). v5 adds: an open boundary where the EM volume
-  truncates the cell (no membrane on that face, shown as "edge of the EM data"), a nucleolus compartment, membrane-adjacent
-  shells for lipid-anchored proteins, the actin cortex and the nuclear lamina, TM proteins and complexes routed into their
-  membranes, and a free-diffusion nuclear pool for small proteins annotated in both nucleus and cytosol. The app reads
-  v4 and v5 data. See "Known limitations".
+- **Data:** https://huggingface.co/datasets/pedrobeltrao/jurkat-structural-cell-data. The site reads `web_full_v7/` (16.7 GB in
+  2,367 files, none larger than 37 MB). The earlier packs stay in `web_full_v3/` and `web_full_v4/`; open them with `?data=`.
+- **Status:** work in progress. The site shows pack **v7**. Compared with v4, the model now has:
+  - an open boundary where the EM volume truncates the cell, a nucleolus, nuclear speckles, and membrane-adjacent
+    shells for anchored proteins, the actin cortex, the lamina and the nuclear pores (v5-v6);
+  - genome-mapped chromatin: 46 chromosome chains with genome coordinates, with RNA polymerase II, CTCF and cohesin
+    at their mapped sites, and nascent RNA (v7);
+  - a stack of Golgi cisternae next to the centrosome, and microtubules traced in the EM volume (v7);
+  - a lamin rod lattice, a pericentriolar matrix, a vimentin cage and microtubule-associated protein bands (v7).
+
+  The app also reads the v4-v6 data. See "Known limitations".
 
 ## What the model is
 
 - **Geometry.** Cell 1 of `jrc_jurkat-1` (Heinrich et al. 2021; Xu et al. 2021), refined at 16 nm. It includes the plasma
   membrane, the nuclear envelope (fitted with HMFF) and its 1,000 nuclear pores, and the mitochondria, ER and
-  endo-lysosomal compartments from the segmentations. The Golgi is procedural, because cell 1 has no segmented Golgi.
+  endo-lysosomal compartments from the segmentations. Cell 1 has no segmented Golgi. In v7 the Golgi is a modelled stack
+  of cisternae (20 nm lumens every 40 nm, 4.2 µm³ in total) placed around the centrioles found in the EM.
   The cell is about 712 µm³.
 - **Inventory.** Protein copy numbers come from Jurkat E6-1 RNA consensus and Jurkat proteomics (Geiger et al. 2012),
   scaled to 100 pg of protein. Localisation comes from HPA, UniProt and GO, with nucleo-cytoplasmic partition from
   Itzhak et al. 2016. Complexes come from the Complex Portal, PDB homo-oligomers and AlphaFold DB homo- and
   heterodimers, calibrated against SEC data (Heusel et al. 2019, 2020).
 - **Pre-placed assemblies.** These are built before packing:
-  - chromatin (31 M nucleosomes plus linker histones, in territories);
-  - polysomes (2.1 M ribosomes, EM-seeded) with mRNA threads (250k mRNAs);
-  - microtubules from a centrosome, and cortical F-actin;
+  - chromatin: 28.2 M nucleosomes plus linker histones on 46 genome-mapped chains, with Pol II, CTCF and cohesin;
+  - polysomes (2.1 M ribosomes, EM-seeded) with mRNA threads (250k mRNAs plus 13k nascent transcripts);
+  - microtubules traced in the EM volume (1.46 mm), centrioles, and cortical F-actin;
+  - a lamin rod lattice under the nuclear envelope (about 1 M lamin copies);
   - one NPC (PDB 7R5K) in every pore.
 - **Packing.** Every other macromolecule is packed into 7,485 tiles of 500 nm. A sphere-tree collision packer
   (forked from the yeast whole-cell pipeline) works in checkerboard phases. Membrane proteins are packed in their
@@ -68,7 +73,7 @@ cd jurkat/viewer
 Then point the viewer at a data folder in one of these ways:
 
 1. **Local data.** Put or symlink the viewer data at `web/data/` (for example a download of the Hugging Face dataset
-   folder `web_full_v4/`; the older v3 pack stays in `web_full_v3/`), then run:
+   folder `web_full_v7/`; older packs stay in `web_full_v3/` and `web_full_v4/`), then run:
    ```sh
    python serve.py web --port 8000           # static server with HTTP Range + CORS
    ```
@@ -76,10 +81,10 @@ Then point the viewer at a data folder in one of these ways:
    downloads whole block shards instead of single tiles.
 2. **Hosted data, no rebuild.** Add a `config.json` next to `index.html`:
    ```json
-   {"data_base": "https://huggingface.co/datasets/pedrobeltrao/jurkat-structural-cell-data/resolve/main/web_full_v4/"}
+   {"data_base": "https://huggingface.co/datasets/pedrobeltrao/jurkat-structural-cell-data/resolve/main/web_full_v7/"}
    ```
 3. **Per visit.** Use the URL parameter `?data=<url>`, which overrides `config.json`. For example:
-   `http://localhost:8000/?data=https://huggingface.co/datasets/pedrobeltrao/jurkat-structural-cell-data/resolve/main/web_full_v4/`
+   `http://localhost:8000/?data=https://huggingface.co/datasets/pedrobeltrao/jurkat-structural-cell-data/resolve/main/web_full_v7/`
 
 The order is `?data=`, then `config.json`, then the default `data/`. Relative URLs resolve against the page. The data
 host must allow CORS and should support HTTP Range requests. Hugging Face `resolve/main/` URLs support both.
@@ -110,10 +115,13 @@ in `MODEL.md`. The order is:
 5. Packing: `jwc.py` steps tiles, counts, index, pack and summary (`run_v3.sh`, `run_npc_patch.sh`).
 6. Viewer data:
    ```sh
-   python jurkat/viewer/jenc_full.py --tiles data/derived/wc/tiles_v3 --libs data/derived/wc/libs_v3npc.json \
-       --meta data/derived/wc/tiles_meta_v3.json --parquet data/derived/wc/tiles_v3.parquet \
-       --geom data/derived/jgeom_cell1_pre_cristae.npz --out data/derived/web_full_v3 --workers 6
-   python jurkat/viewer/check_data.py data/derived/web_full_v3
+   python jurkat/viewer/jenc_full.py --tiles data/derived/wc/tiles --libs data/derived/wc/libs_v7.json \
+       --meta data/derived/wc/tiles_meta.json --parquet data/derived/wc/tiles.parquet \
+       --geom data/derived/jgeom_cell1_v7.npz --prepass data/derived/wc --regions v7 \
+       --mrna data/derived/prepass/mrna_cell1.npz --mrna-drop data/derived/prepass_v7/mrna_drop.npy \
+       --mrna-extra data/derived/chromatin/v8/prepass/mrna_nascent_cell1.npz \
+       --ingredients data/derived/ingredients_v7.tsv --out data/derived/web_full_v7 --workers 6
+   python jurkat/viewer/check_data.py data/derived/web_full_v7 --ref --geom data/derived/jgeom_cell1_v7.npz
    ```
    The encoder streams one 1 µm slab per worker (bounded memory) and resumes after an interruption (state in
    `<out>_work/`).
@@ -138,13 +146,21 @@ in `MODEL.md`. The order is:
 Please cite the original data sources when you use the model. The derived viewer data on Hugging Face inherit the
 attribution requirements of the CC BY sources above.
 
-## Known limitations (pack v5)
+## Known limitations (pack v7)
 
-- **Placement shortfalls.** 95.6% of the target mass was placed. Crowded and thin compartments jam with the current
-  random sequential packer: mitochondrial matrix 70.6% (between cristae), ER lumen 66.3%, nucleolus 88% (capped at
-  110 mg/ml of protein; rRNA is not modelled), lamina shell 69%, Golgi cytosolic-face shell 35% (the procedural Golgi
-  has about a quarter of the real cisternal area), NE 88%, endo-lysosomal membranes 88%. Cytosol, nucleoplasm, PM,
-  cortex, ER membrane and inner mitochondrial membrane are at 98–99.6%.
+- **Placement shortfalls.** 96.4% of the target mass was placed. Crowded and thin compartments jam with the current
+  random sequential packer:
+  - mitochondrial matrix 86% and ER lumen 82%;
+  - nucleolus 87% (rRNA is not modelled);
+  - NE membrane 80% (crowded by the lamin lattice and the chromatin);
+  - pericentriolar matrix 84%, Golgi peripheral shell 86% and NPC channel shell 77%.
+
+  Cytosol, nucleoplasm, PM, cortex, ER membrane and inner mitochondrial membrane are at 97–99.6%.
+- **Chromatin.** The genome-mapped chromatin matches the EM peripheral density, territory order, compartments and
+  LAD/NAD positions. It misses TAD insulation and the fine texture of DAPI images.
+- **Compartment codes.** The viewer has 32 region codes. Proteins in the new v7 packing regions (pericentriolar
+  matrix, vimentin cage, microtubule-associated bands) are coloured as cytosol, and the NPC channel shell as nuclear
+  pore.
 - **Truncated cell.** The EM volume cuts cell 1 at its bottom face (41 µm² footprint). That face is an open boundary:
   no membrane, nothing placed beyond it. A side-wall extrapolation puts the missing cap at about 7 µm³ (1% of the
   cell; a sphere-shaped cap would be 29 µm³, but the measured walls are much steeper), and copy numbers are scaled
@@ -155,10 +171,11 @@ attribution requirements of the CC BY sources above.
   compared with proximity data without circularity. Pre-built heterodimers (AFDB models selected by SEC co-elution
   or STRING) are placed as complexes.
 - **Viewer.** The whole-cell distance fields for the cut-face colours are resampled at 48 nm (cell, NE) and 32 nm
-  (mitochondria, ER, Golgi, endo-lysosomes, nucleolus), which agrees with the 16 nm geometry at 98.8% of points
-  inside the cell (cristae and nucleolus included). The per-tile membrane meshes are 8 nm.
-- **GPU memory.** The whole-cell build needs a WebGPU storage-buffer binding of about 205 MB (library about 160 MB, fields
-  205 MB). Desktop GPUs expose ≥ 1 GB; devices at the WebGPU minimum (128 MiB) get an error message.
+  (mitochondria, ER, Golgi, endo-lysosomes, nucleolus). The Golgi cisternae use a 16 nm field. Labels agree with
+  the 16 nm geometry at 98.8% of points inside the cell (cristae, nucleolus, speckles and Golgi cisternae included).
+  The per-tile membrane meshes are 8 nm. The whole-cell overview mesh shows only the outer surface of the Golgi stack.
+- **GPU memory.** The whole-cell build needs a WebGPU storage-buffer binding of about 230 MB (library about 160 MB, fields
+  about 230 MB). Desktop GPUs expose ≥ 1 GB; devices at the WebGPU minimum (128 MiB) get an error message.
 - **Browser support.** Needs WebGPU (recent Chrome or Edge on desktop). Tested on an Intel integrated GPU (Iris Xe,
   "Detail: medium"); other GPUs and Safari/Firefox are untested.
 

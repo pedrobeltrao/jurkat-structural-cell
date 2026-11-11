@@ -129,8 +129,9 @@ export const MEM_NAMES = ['plasma membrane', 'nuclear envelope', 'ER membrane', 
   'Golgi membrane', 'endo-lysosomal membrane'];
 export const LABEL_NAMES = ['exterior', 'cytosol', 'perinuclear space', 'nucleoplasm', 'nucleolus', 'mito intermembrane space',
   'mito matrix', 'ER lumen', 'Golgi lumen', 'endo-lysosomal lumen', 'nuclear pore channel',
-  'edge of the EM data (the imaged volume ends here; the cell continues)', 'nuclear speckle'];
-export const L_OUTV = 11, L_SPK = 12;
+  'edge of the EM data (the imaged volume ends here; the cell continues)', 'nuclear speckle',
+  'Golgi intercisternal cytosol'];
+export const L_OUTV = 11, L_SPK = 12, L_GIC = 13;        // L_GIC: model v7 cisternal Golgi (cell3d GIC), filled like cytosol
 // procedural lipid classes (worker.ts LCUM; index 5 is the sterol slot of the shader, unused: cholesterol is not drawn as a headgroup)
 export const LIPID_CLASSES = ['PI', 'PE', 'PC', 'SM', 'PS', '(sterol, unused)', 'other lipids'];
 // region indices of membrane-embedded instances (shaders.ts animInst uses the same range)

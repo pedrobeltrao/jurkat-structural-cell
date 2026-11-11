@@ -22,9 +22,17 @@ Shell regions (jpack_test.SHELL_REG) are split over tiles by their membrane's ar
 v6: nuclear speckles (cell3d SPK, jspeckles.py) are a volume region; chromatin pre-pass instances (nucleosomes, H1) whose
 centre lies inside a speckle are dropped at indexing (interchromatin space). Shells of a membrane with an area factor
 (Golgi: GOLGI_STACK_F, cisternae not built) are packed at the modelled share, as its TM proteins (JWC_GOLGI_SHELL_FULL=1
-restores v5). The NPC-proximal shell sh_NPC is split over tiles by NE area."""
+restores v5). The NPC-proximal shell sh_NPC is split over tiles by NE area.
+v7 (JWC_CONFIG=<json>, e.g. data/derived/v7/jwc_v7.json): paths of the output dir, geometry, inventory, pre-pass files
+(chromatin switch: config "chromatin" {source: path} + "chromatin_source", or env JWC_CHROMATIN_SOURCE / JWC_CHROMATIN=path),
+mRNA beads and a list of dropped beads, the region set (JWC_REGIONS=v7: virtual volume regions of jvirtual.py, packed
+before the label volume regions, their tile measure = selected cytosol volume) and the MT centerlines / cytoskeleton json
+that define them. Cisternal Golgi (cell3d G_GOLGI_CIS): the Golgi area factor becomes inventory / measured area (as cristae).
+Env JWC_OUT overrides the output dir (test packs). Without JWC_CONFIG everything is as in v6."""
 import os, sys, json, time
 os.environ.setdefault("NUMBA_THREADING_LAYER", "workqueue")   # fork-safe (OpenMP aborts after fork)
+if len(sys.argv) > 1 and sys.argv[1] == "pack":
+    os.environ["NUMBA_NUM_THREADS"] = "1"        # before numba is imported: workers that (re)compile reload the config
 import numpy as np, pandas as pd
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import cell3d as c3
@@ -33,12 +41,23 @@ from skimage.measure import marching_cubes
 
 V = (__import__("os").environ.get("VCELL_ROOT", ".") + "")
 D = f"{V}/data/derived"
-W = f"{D}/wc"
+CFG = json.load(open(os.environ["JWC_CONFIG"])) if os.environ.get("JWC_CONFIG") else {}
+_ap = lambda p: p if (p is None or os.path.isabs(p)) else f"{V}/{p}"
+if CFG.get("regions"): os.environ.setdefault("JWC_REGIONS", CFG["regions"])
+W = os.environ.get("JWC_OUT") or _ap(CFG.get("out_dir")) or f"{D}/wc"
+GEOM = _ap(CFG.get("geometry")) or f"{D}/jgeom_cell1.npz"
+ING = _ap(CFG.get("ingredients")) or f"{D}/ingredients_v0.tsv"
+MRNA = _ap(CFG.get("mrna")) or f"{D}/prepass/mrna_cell1.npz"
+MRNA_DROP = _ap(CFG.get("mrna_drop"))
 TILE = 500.0
 VOX = 4.0; MESH_H = 8.0; MEAS_H = 8.0
 HALO = 40.0
 FACE_ACTIN = 160.0
 NPROC = int(os.environ.get("JWC_NPROC", 24))
+SEED_PRUNE = os.environ.get("JWC_SEED_PRUNE", "0") == "1"   # thin-lumen seed pruning (pack3d; v7 tests: no gain, off)
+THIN_TRY_F = float(os.environ.get("JWC_THIN_TRY_F", 10.0 if CFG else 1.0))    # v7: attempt budget x in thin lumens
+THIN_GIVEUP_F = float(os.environ.get("JWC_THIN_GIVEUP_F", 16.0 if CFG else 1.0))  # (ER lumen tests, data/derived/v7/er_lumen_tests)
+MAX_TRIES = int(os.environ.get("JWC_MAX_TRIES", 200)); GIVE_UP = int(os.environ.get("JWC_GIVE_UP", 25))
 GOLGI_SHELL_FULL = os.environ.get("JWC_GOLGI_SHELL_FULL", "0") == "1"   # 1 = v5 behaviour (no area factor on shells)
 import jpack_test as jp                                  # region definitions, mapping tables, area factors
 VOL_REG, MEM_REG, RNAMES, NV = jp.VOL_REG, jp.MEM_REG, jp.RNAMES, jp.NV
@@ -47,8 +66,17 @@ _S = {}
 
 
 def load_cell():
-    z = np.load(f"{D}/jgeom_cell1.npz")
+    z = np.load(GEOM)
     return c3.Cell(z["G"], z["pores"]), json.loads(str(z["summary"]))
+
+
+def virtual_ctx(cell):
+    """v7 virtual-region context (jvirtual), or None"""
+    if not jp.VIRTUAL: return None
+    import jvirtual as jv
+    ctx = jv.load_context(_ap(CFG["mt_centerlines"]), _ap(CFG["cytoskeleton_json"]), GEOM, _ap(CFG.get("ne_mesh")))
+    ctx["memfun"] = cell.mems
+    return ctx
 
 
 def face_keep(tri, G):
@@ -65,8 +93,16 @@ def _measure(idx):
         lo = _S["T"][i] * TILE + _S["lo0"]
         n = int(TILE / MEAS_H); g = (np.arange(n) + 0.5) * MEAS_H
         X, Y, Z = np.meshgrid(lo[0] + g, lo[1] + g, lo[2] + g, indexing="ij")
-        lab = cell.labels(np.stack([X.ravel(), Y.ravel(), Z.ravel()], 1))
+        Pm = np.stack([X.ravel(), Y.ravel(), Z.ravel()], 1); lab = cell.labels(Pm)
         vol = [float(np.isin(lab, labs).sum() * MEAS_H ** 3) for _, labs in VOL_REG]
+        if _S.get("vctx") is not None and (lab == c3.CYTO).any():
+            import jvirtual as jv
+            mk = jv.masks(Pm, lab, None, _S["vctx"], jp.VIRTUAL)
+            for k, (name, _) in enumerate(VOL_REG):
+                if name in mk: vol[k] = float(mk[name].sum() * MEAS_H ** 3)
+        elif _S.get("vctx") is not None:
+            for k, (name, _) in enumerate(VOL_REG):
+                if name in jp.VIRTUAL: vol[k] = 0.0
         m = n + 1; gm = np.arange(m) * MEAS_H
         X, Y, Z = np.meshgrid(lo[0] + gm, lo[1] + gm, lo[2] + gm, indexing="ij")
         S = cell.mems(np.stack([X.ravel(), Y.ravel(), Z.ravel()], 1)).reshape(m, m, m, c3.NMEM)
@@ -93,7 +129,7 @@ def step_tiles():
     keep = dep > -TILE * 0.87                               # tile centre within a half diagonal of the cell
     T = T[keep]
     print(f"candidate tiles {nt ** 3:,} -> {len(T):,} near the cell", flush=True)
-    _S.update(cell=cell, T=T, lo0=lo0)
+    _S.update(cell=cell, T=T, lo0=lo0, vctx=virtual_ctx(cell))
     import multiprocessing as mp
     chunks = np.array_split(np.arange(len(T)), NPROC * 8)
     t0 = time.time()
@@ -112,17 +148,40 @@ def step_tiles():
 
 # ------------------------------------------------------------------ expected counts
 def prepass_files():
+    """absolute paths of the pre-pass npz files (v6: every *_cell1.npz in prepass/ except mRNA; v7: the config list,
+    with the chromatin entry chosen by the chromatin switch)"""
+    if CFG.get("prepass"):
+        out = []
+        for name, p in CFG["prepass"].items():
+            if name == "chromatin":
+                src = os.environ.get("JWC_CHROMATIN_SOURCE", CFG.get("chromatin_source", "current"))
+                p = os.environ.get("JWC_CHROMATIN") or CFG.get("chromatin", {}).get(src, p)
+            out.append(_ap(p))
+        return out
     P = f"{D}/prepass"
-    return sorted(f for f in os.listdir(P) if f.endswith("_cell1.npz") and not f.startswith("mrna"))
+    return [f"{P}/{f}" for f in sorted(f for f in os.listdir(P) if f.endswith("_cell1.npz") and not f.startswith("mrna"))]
 
 
 def step_counts(seed=3):
     M = pd.read_parquet(f"{W}/tiles.parquet"); cell, summ = load_cell()
-    I = pd.read_csv(f"{D}/ingredients_v0.tsv", sep="\t")
+    I = pd.read_csv(ING, sep="\t")
     consumed = {}
     for f in prepass_files():
-        js = f"{D}/prepass/{f[:-4]}.json"
+        js = f[:-4] + ".json"
         for k, v in json.load(open(js)).get("consumed", {}).items(): consumed[k] = consumed.get(k, 0) + v
+    ckey = {}                                             # v7: pre-pass consumption taken out of one key (lamina lattice)
+    for f in prepass_files():
+        js = json.load(open(f[:-4] + ".json"))
+        if js.get("consumed_key"):
+            for k, v in js["consumed"].items(): ckey[k] = (js["consumed_key"], v)
+    for k, (key, c_) in ckey.items():
+        ii = I.index[I.ing_id == k]
+        if not len(ii): continue
+        i = ii[0]; w = json.loads(I.at[i, "comp_weights"]); C_ = float(I.at[i, "copies"]); left = C_ - c_
+        if left <= 0 or key not in w: continue
+        nw = {kk: C_ * vv / left for kk, vv in w.items() if kk != key}; nw[key] = max(C_ * w[key] - c_, 0.0) / left
+        I.at[i, "comp_weights"] = json.dumps(nw)
+        print(f"  {k}: {c_:,} pre-pass copies taken from key '{key}' ({C_ * w[key] - c_:,.0f} left there)", flush=True)
     I["copies"] = (I.copies - I.ing_id.map(consumed).fillna(0)).clip(lower=0).round().astype(np.int64)
     have = {f[:-4] for f in os.listdir(LIB)}
     if os.environ.get("JWC_LIBS_FROM"):                  # keep an earlier library order (tiles store indices into libs.json)
@@ -140,6 +199,8 @@ def step_counts(seed=3):
     fac = {"MITO_IM": jp.CRISTAE_F, "GOLGI": jp.GOLGI_STACK_F}
     if c3.n_fields(cell.G) and cell.G[c3.G_CRISTAE] > 0:
         fac["MITO_IM"] = max(1.0, jp.CRISTAE_F * carea["MITO_OM"] / max(carea["MITO_IM"], 1.0))
+    if cell.G[c3.G_GOLGI_CIS] > 0:                     # v7 cisternal Golgi: inventory area = GOLGI_STACK_F x blob area
+        fac["GOLGI"] = max(1.0, jp.GOLGI_STACK_F * summ["golgi"]["area_um2"] * 1e6 / max(carea["GOLGI"], 1.0))
     print("membrane area factors (inventory / modelled):", {k: round(v, 2) for k, v in fac.items()}, flush=True)
     of = summ.get("open_face") if cell.G[c3.G_FACE] > 0 else None
     f_vol, f_pm = (of["f_vol"], of["f_pm"]) if of else (1.0, 1.0)
@@ -176,8 +237,10 @@ def step_counts(seed=3):
         rows.append(np.stack([nz[sel], np.full(sel.sum(), li), np.full(sel.sum(), ri), k[sel]], 1))
     C = np.concatenate(rows).astype(np.int64)
     C = C[np.lexsort((C[:, 1], C[:, 0]))]
+    os.makedirs(W, exist_ok=True)
     np.savez_compressed(f"{W}/counts.npz", tile=C[:, 0].astype(np.int32), lib=C[:, 1].astype(np.int32), region=C[:, 2].astype(np.int16), n=C[:, 3].astype(np.int32))
-    json.dump(dict(libs=list(I.ing_id), mass_da=I.mass_da.tolist(), consumed=consumed, f_vol=f_vol, f_pm=f_pm), open(f"{W}/libs.json", "w"))
+    json.dump(dict(libs=list(I.ing_id), mass_da=I.mass_da.tolist(), consumed=consumed, f_vol=f_vol, f_pm=f_pm, area_factors=fac,
+                   rnames=list(RNAMES), ingredients=ING, geometry=GEOM, prepass=prepass_files()), open(f"{W}/libs.json", "w"))
     print(f"counts: {len(C):,} (tile, lib, region) entries, {C[:, 3].sum():,} instances; per region:",
           {RNAMES[ri]: int(C[C[:, 2] == ri, 3].sum()) for ri in range(len(RNAMES))})
 
@@ -189,10 +252,18 @@ def step_index():
     key = {tuple(t): i for i, t in enumerate(M[["ti", "tj", "tk"]].values)}
     libs, T_, P_, Q_ = [], [], [], []
     for f in prepass_files():
-        z = np.load(f"{D}/prepass/{f}")
+        z = np.load(f)
         ids = list(z["lib_ids"]); base = len(libs); libs += ids
-        T_.append(z["types"].astype(np.int32) + base); P_.append(z["pos"].astype(np.float32)); Q_.append(z["quat"].astype(np.float32))
-        print("  ", f, len(z["types"]), flush=True)
+        keep_f = np.ones(len(z["types"]), bool)
+        for dj in CFG.get("prepass_drop", []):         # v7: instances displaced by a later pre-pass (lamina over chromatin)
+            js_ = json.load(open(_ap(dj)))
+            if os.path.realpath(_ap(js_["target"])) == os.path.realpath(f) and js_["n"] == len(keep_f):
+                keep_f[np.load(_ap(js_["drop"]))] = False
+                print(f"   {os.path.basename(f)}: {int((~keep_f).sum()):,} instances dropped ({js_['why']})", flush=True)
+            elif os.path.realpath(_ap(js_["target"])) != os.path.realpath(f) and os.path.basename(js_["target"]) == os.path.basename(f):
+                print(f"   WARNING {os.path.basename(f)}: drop list {dj} was made for {js_['target']}; not applied (re-run its builder)", flush=True)
+        T_.append(z["types"][keep_f].astype(np.int32) + base); P_.append(z["pos"][keep_f].astype(np.float32)); Q_.append(z["quat"][keep_f].astype(np.float32))
+        print("  ", os.path.relpath(f, D), len(z["types"]), flush=True)
     T_ = np.concatenate(T_); P_ = np.concatenate(P_); Q_ = np.concatenate(Q_)
     cell, _ = load_cell()
     if cell.G[c3.G_FACE] > 0:                               # cortical F-actin laid along the (former) face membrane
@@ -220,10 +291,17 @@ def step_index():
     off = np.searchsorted(tid[keep][o], np.arange(len(M) + 1))
     np.save(f"{W}/prepass_off.npy", off); json.dump(libs, open(f"{W}/prepass_libs.json", "w"))
     print(f"pre-pass instances {len(T_):,}, indexed {int(keep.sum()):,} into {len(M):,} tiles", flush=True)
-    mf = f"{D}/prepass/mrna_cell1.npz"                    # mRNA beads (obstacles; beads inside ribosome channels skipped)
+    mf = MRNA                                             # mRNA beads (obstacles; beads inside ribosome channels skipped)
     if os.path.exists(mf):
         z = np.load(mf); pts = z["pts"]; keepb = z["inrib"] == 0 if "inrib" in z.files else np.ones(len(pts), bool)
-        pts = pts[keepb]; tid = _tile_ids(np.floor((pts - lo0) / TILE).astype(np.int64), M)
+        if MRNA_DROP and os.path.exists(MRNA_DROP):        # v7: beads clashing with the new MTs / centrioles
+            dr = np.load(MRNA_DROP); keepb[dr] = False; print(f"mRNA beads dropped (clash list): {len(dr):,}", flush=True)
+        pts = pts[keepb]
+        for xf in CFG.get("mrna_extra", []):              # v7: nascent RNA of the genome-mapped chromatin (same bead format)
+            zx = np.load(_ap(xf)); px = zx["pts"]; kx = zx["inrib"] == 0 if "inrib" in zx.files else np.ones(len(px), bool)
+            assert abs(float(zx["bead_radius"]) - float(z["bead_radius"])) < 1e-6, "mRNA bead radii differ"
+            pts = np.concatenate([pts, px[kx]]); print(f"extra RNA beads {os.path.relpath(_ap(xf), D)}: {int(kx.sum()):,}", flush=True)
+        tid = _tile_ids(np.floor((pts - lo0) / TILE).astype(np.int64), M)
         k = tid >= 0; o = np.argsort(tid[k], kind="stable")
         np.save(f"{W}/mrna_pts.npy", pts[k][o].astype(np.float32))
         np.save(f"{W}/mrna_off.npy", np.searchsorted(tid[k][o], np.arange(len(M) + 1)))
@@ -248,6 +326,31 @@ def _libpack(ids):
     return np.array(so, np.int64), np.concatenate(C), np.concatenate(R), np.array(B)
 
 
+def _hmin(so, STC, STR, ndir=200, seed=5):
+    """per library: minimal support half-width min_u max_b (u . c_b + r_b) over ndir directions (pack3d seed pruning)"""
+    u = np.random.default_rng(seed).normal(size=(ndir, 3)); u /= np.linalg.norm(u, axis=1)[:, None]
+    out = np.zeros(len(so) - 1)
+    for i in range(len(so) - 1):
+        c = STC[so[i]:so[i + 1]]; r = STR[so[i]:so[i + 1]]
+        out[i] = float((c @ u.T + r[:, None]).max(0).min()) if len(r) else 0.0
+    return out
+
+
+def _qf(so, STC, STR):
+    Q = jp.qflat(so, STC, STR)
+    return np.c_[Q, _hmin(so, STC, STR)] if SEED_PRUNE else Q
+
+
+def _neigh_of(t, key):
+    """indices of the (up to 26) neighbour tiles of tile grid index t (key: grid index tuple -> tile index)"""
+    out = []
+    for d in np.stack(np.meshgrid([-1, 0, 1], [-1, 0, 1], [-1, 0, 1], indexing="ij"), -1).reshape(-1, 3):
+        if d.any():
+            j = key.get(tuple(t + d))
+            if j is not None: out.append(j)
+    return out
+
+
 def _neigh(t):
     out = []
     for d in np.stack(np.meshgrid([-1, 0, 1], [-1, 0, 1], [-1, 0, 1], indexing="ij"), -1).reshape(-1, 3):
@@ -269,8 +372,22 @@ def _pack_tile(ti):
     X, Y, Z = np.meshgrid(lo[0] + g, lo[1] + g, lo[2] + g, indexing="ij")
     P = np.stack([X.ravel(), Y.ravel(), Z.ravel()], 1); lab = cell.labels(P)
     vox_off, VP = [0], []
-    for name, labs in VOL_REG:
-        m = np.isin(lab, labs); VP.append(P[m]); vox_off.append(vox_off[-1] + int(m.sum()))
+    vm = {}
+    if _S.get("vctx") is not None and (lab == c3.CYTO).any():
+        import jvirtual as jv
+        vm = jv.masks(P, lab, None, _S["vctx"], jp.VIRTUAL)
+    thin_r = jp.regmem()
+    for ri_, (name, labs) in enumerate(VOL_REG):
+        m = vm.get(name) if name in jp.VIRTUAL else np.isin(lab, labs)
+        if m is None: m = np.zeros(len(P), bool)
+        Pr = P[m]
+        if SEED_PRUNE:                                   # v7: membrane clearance per seed voxel, thin lumens sorted by it
+            c_ = np.full(len(Pr), 1e3)
+            if thin_r[ri_] >= 0 and len(Pr):
+                Sm = cell.mems(Pr); c_ = np.min(np.abs(Sm) - c3.MEM_HALF[None, :], axis=1) + c3.HALF
+                o_ = np.argsort(-c_, kind="stable"); Pr, c_ = Pr[o_], c_[o_]
+            Pr = np.c_[Pr, c_]
+        VP.append(Pr); vox_off.append(vox_off[-1] + int(m.sum()))
     vox_off += [vox_off[-1]] * len(MEM_REG); VOXP = np.concatenate(VP); del P, X, Y, Z, lab
     # membrane triangles
     m_ = int(TILE / MESH_H) + 1; gm = np.arange(m_) * MESH_H
@@ -292,6 +409,8 @@ def _pack_tile(ti):
     jl, jr, jn = _S["clib"][a:b].astype(np.int64), _S["creg"][a:b].astype(np.int64), _S["cn"][a:b].astype(np.int64)
     if len(jl):
         cls = np.where(jr >= NSH0, 1, np.where(jr >= NV, 0, 2))           # membranes, then shells, then volumes
+        if jp.VIRTUAL:                                                     # v7: virtual volume regions with the shells
+            cls = np.where((jr >= NV - len(jp.VIRTUAL)) & (jr < NV), 1, cls)
         o = np.lexsort((-_S["BR"][jl], cls)); jl, jr, jn = jl[o], jr[o], jn[o]
     # obstacles: pre-pass instances in this tile + neighbours, and packed neighbour tiles
     OCs, ORs = [], []
@@ -319,8 +438,8 @@ def _pack_tile(ti):
     e = np.zeros(0, np.int64)
     res = p3.pack_tile(int(ti) * 7919 + 11, lo, TILE, HALO, cell.G, cell.pores, cell.pidx, cell.PT, cell.PQ, cell.PC,
                        _S["so"], _S["STC"], _S["STR"], _S["BR"], jp.regmask(), jl, jr, jn, NV, np.array(vox_off, np.int64), VOXP, VOX,
-                       np.array(tri_off, np.int64), TRI, CUMA, OC, OR, 0, 1500.0, 0, 200, 25, cap_s, cap_e,
-                       e, np.zeros((0, 3)), e, e, np.zeros(0), e, np.zeros(7), _S["QF"], jp.regmem(), *jp.shell_arrays())
+                       np.array(tri_off, np.int64), TRI, CUMA, OC, OR, 0, 1500.0, 0, MAX_TRIES, GIVE_UP, cap_s, cap_e,
+                       e, np.zeros((0, 3)), e, e, np.zeros(0), e, np.r_[np.zeros(7), THIN_TRY_F, THIN_GIVEUP_F], _S["QF"], jp.regmem(), *jp.shell_arrays())
     types, pos, quat, placed, _, _, overflow, ns, ne, _ = res
     tmp_f = f"{W}/tiles/.{ti}.tmp.npz"
     np.savez(tmp_f, types=types.astype(np.int32), pos=pos, quat=quat, job_lib=jl.astype(np.int32), job_region=jr.astype(np.int16),
@@ -338,8 +457,8 @@ def step_pack(limit=None):
     cz = np.load(f"{W}/counts.npz")
     coff = np.searchsorted(cz["tile"], np.arange(len(M) + 1))
     Tij = M[["ti", "tj", "tk"]].values
-    _S.update(cell=cell, Tij=Tij, lo0=np.array(meta["lo0"]), key={tuple(t): i for i, t in enumerate(Tij)},
-              so=so, STC=STC, STR=STR, BR=BR, pso=pso, pSTC=pSTC, pSTR=pSTR, pBR=pBR, QF=(np.zeros((0, 4)) if os.environ.get("JWC_NO_LUMEN_ALIGN") else jp.qflat(so, STC, STR)),
+    _S.update(cell=cell, Tij=Tij, lo0=np.array(meta["lo0"]), key={tuple(t): i for i, t in enumerate(Tij)}, vctx=virtual_ctx(cell),
+              so=so, STC=STC, STR=STR, BR=BR, pso=pso, pSTC=pSTC, pSTR=pSTR, pBR=pBR, QF=(np.zeros((0, 4)) if os.environ.get("JWC_NO_LUMEN_ALIGN") else _qf(so, STC, STR)),
               clib=cz["lib"], creg=cz["region"], cn=cz["n"], coff=coff,
               # loaded fully into RAM before the fork (shared copy-on-write): random mmap reads on Lustre left workers I/O-bound
               ptypes=np.load(f"{W}/prepass_types.npy"), ppos=np.load(f"{W}/prepass_pos.npy"),
@@ -390,9 +509,13 @@ if __name__ == "__main__":
     elif step == "index": step_index()
     elif step == "pack":
         lim = None
+        if os.environ.get("JWC_TILES"): sys.argv = sys.argv[:2]
         if len(sys.argv) > 2:                      # pack a sub-box: x0 y0 z0 x1 y1 z1 (model nm)
             M = pd.read_parquet(f"{W}/tiles.parquet"); meta = json.load(open(f"{W}/tiles_meta.json"))
             b = np.array([float(x) for x in sys.argv[2:8]]); c = M[["ti", "tj", "tk"]].values * TILE + np.array(meta["lo0"]) + TILE / 2
             lim = np.where(np.all((c >= b[:3]) & (c <= b[3:]), axis=1))[0]; print("sub-box tiles:", len(lim))
+        if os.environ.get("JWC_TILES"):           # explicit tile list (test packs): comma-separated indices or a .npy file
+            t_ = os.environ["JWC_TILES"]
+            lim = np.load(t_) if t_.endswith(".npy") else np.array([int(x) for x in t_.split(",")]); print("tile list:", len(lim))
         step_pack(lim)
     elif step == "summary": step_summary()

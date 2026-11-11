@@ -53,6 +53,12 @@ in both nucleus and cytoplasm. The face where the EM volume truncates the cell i
 chromatin) holding proteins annotated to nuclear speckles, such as pre-mRNA splicing factors. It also adds a shell next
 to the nuclear pores, on both faces of the nuclear envelope, for nuclear transport receptors and pore basket proteins.
 These are shown with the nuclear pores.</p>
+<p><b>Model v7</b> replaces the chromatin with genome-mapped chromatin: 46 continuous chromosome chains with genome
+coordinates, RNA polymerase II, CTCF and cohesin at their mapped sites, and nascent RNA. The Golgi is now a stack of
+cisternae next to the centrosome; the space between the cisternae is cytosol. The microtubules are traced from the EM
+volume. v7 also adds a lattice of lamin rods under the nuclear envelope, a pericentriolar matrix, a vimentin cage
+around the nucleus and bands of microtubule-associated proteins. Proteins in the last three are coloured as cytosol,
+because the viewer has no compartment code left for them.</p>
 <h3>Colours and controls</h3>
 <ul>
 <li>Cut faces are coloured by compartment (cytosol, nucleoplasm, nucleolus, nuclear speckles, perinuclear space,

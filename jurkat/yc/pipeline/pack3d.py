@@ -301,6 +301,7 @@ def pack_tile(seed, lo, size, halo,
     placed = np.zeros(jn.shape[0], np.int64)
     out = np.zeros(c3.NMEM)
     M = np.empty((3, 3)); q = np.empty(4); t = np.empty(3); nrm = np.empty(3)
+    pk_list = np.zeros(max(pores.shape[0], 1), np.int64)
     no = 0
     overflow = not ok
     for j in range(jn.shape[0]):
@@ -314,6 +315,7 @@ def pack_tile(seed, lo, size, halo,
         is_mem = reg >= n_mem_regions0 and not is_shell
         mi = reg - n_mem_regions0
         sm = -1; sa = 0.0; sb = 0.0; ssg = 1.0; si = 0; plim = 0.0
+        v0 = 0; v1 = 0; t0 = 0; t1 = 0; npk = 0
         if is_shell:
             si = reg - n_shell0; sm = SH_MEM[si]; ssg = SH_SIGN[si]
             sa = SH_D0[si]; sb = SH_D1[si] + (BR[li] if (SH_RAD[si] & 1) else 0.0)
@@ -321,6 +323,20 @@ def pack_tile(seed, lo, size, halo,
             t0 = tri_off[sm]; t1 = tri_off[sm + 1]
             if t1 <= t0:
                 continue
+            # v7: narrow pore-limited shells (central channel, plim <= 60 nm) sample their centre directly in the pore
+            # cylinder (radius plim, |z| <= sb + PERI_W/2 along the pore axis) of a pore near the tile; membrane-triangle
+            # sampling almost never lands within a few tens of nm of an axis
+            npk = 0
+            if plim > 0.0 and plim <= 60.0:
+                for k in range(pores.shape[0]):
+                    inside = True
+                    for d in range(3):
+                        if pores[k, d] < lo[d] - plim - sb or pores[k, d] > lo[d] + size + plim + sb:
+                            inside = False
+                    if inside:
+                        pk_list[npk] = k; npk += 1
+                if npk == 0:
+                    continue
         elif is_mem:
             t0 = tri_off[mi]; t1 = tri_off[mi + 1]
             if t1 <= t0:
@@ -333,6 +349,24 @@ def pack_tile(seed, lo, size, halo,
                 continue
         thin = (not is_mem) and (not is_shell) and QFLAT.shape[0] == n_types and REGMEM[reg] >= 0
         gu = give_up * LUMEN_GIVEUP_F if (thin or is_shell) else give_up
+        mt_ = max_tries
+        if thin and prm.shape[0] > 8:                        # v7: larger attempt budget in thin lumens (prm[7] tries x,
+            mt_ = int(max_tries * prm[7]); gu = int(gu * prm[8])   # prm[8] give-up x): RSA there is attempt-limited
+        # v7 seed pruning in thin lumens: VOXP column 3 = membrane clearance of the voxel (seeds of the region sorted by it,
+        # descending) and QFLAT column 4 = the library's minimal support half-width (min over directions of the extent from
+        # its origin). A centre closer to a membrane than that cannot be valid in any orientation, so seeds are drawn only
+        # from voxels with clearance >= QFLAT[li, 4] - VOX_JIT (jitter margin). Without the extra columns: as v6.
+        vcut = v1 if not (is_mem or is_shell) else 0
+        if thin and VOXP.shape[1] >= 4 and QFLAT.shape[1] >= 5:
+            need = QFLAT[li, 4] - 0.87 * vox_h
+            lo_i = v0; hi_i = v1
+            while lo_i < hi_i:                                # first index with clearance < need (descending order)
+                mid = (lo_i + hi_i) // 2
+                if VOXP[mid, 3] >= need:
+                    lo_i = mid + 1
+                else:
+                    hi_i = mid
+            vcut = lo_i if lo_i > v0 else v1
         fails_in_row = 0
         for inst in range(jn[j]):
             success = False
@@ -353,7 +387,7 @@ def pack_tile(seed, lo, size, halo,
                     if att_k < 0:
                         att_k = ptn_off[li + 1] - 1
                     att_stats[0] += 1
-            for tr in range(max_tries):
+            for tr in range(mt_):
                 near = att_k >= 0 and tr < att_tries
                 if near:
                     pt = ptn_idx[att_k]
@@ -362,7 +396,34 @@ def pack_tile(seed, lo, size, halo,
                     else:
                         dd = BR[li] + BR[pt] + prm[5] + (prm[6] - prm[5]) * np.random.random()
                     _near(res_pos, res_n, pt, dd, t)
-                if is_shell:
+                if is_shell and npk > 0:
+                    kp = pk_list[int(np.random.random() * npk)]
+                    zz = (2.0 * np.random.random() - 1.0) * (sb + 0.5 * c3.PERI_W)
+                    rr = plim * np.sqrt(np.random.random()); ph = 2.0 * np.pi * np.random.random()
+                    ax_ = pores[kp, 3:6]
+                    e1x = -ax_[1]; e1y = ax_[0]; e1z = 0.0
+                    if abs(ax_[2]) > 0.9:
+                        e1x = 0.0; e1y = -ax_[2]; e1z = ax_[1]
+                    nn_ = np.sqrt(e1x * e1x + e1y * e1y + e1z * e1z)
+                    e1x /= nn_; e1y /= nn_; e1z /= nn_
+                    e2x = ax_[1] * e1z - ax_[2] * e1y; e2y = ax_[2] * e1x - ax_[0] * e1z; e2z = ax_[0] * e1y - ax_[1] * e1x
+                    cph = np.cos(ph) * rr; sph = np.sin(ph) * rr
+                    t[0] = pores[kp, 0] + zz * ax_[0] + cph * e1x + sph * e2x
+                    t[1] = pores[kp, 1] + zz * ax_[1] + cph * e1y + sph * e2y
+                    t[2] = pores[kp, 2] + zz * ax_[2] + cph * e1z + sph * e2z
+                    if t[0] < lo[0] or t[1] < lo[1] or t[2] < lo[2] or t[0] >= lo[0] + size or t[1] >= lo[1] + size or t[2] >= lo[2] + size:
+                        continue
+                    u_ = ssg * mem_value(t[0], t[1], t[2], sm, G, pores, pidx, PT, PQ, PC, out)
+                    if u_ < sa or u_ > sb:
+                        continue
+                    rand_quat(q)
+                    quat_mat(q, M)
+                    transform(stc, M, t, P)
+                    if g_overlap(glo, H_GRID, dims, head, nxt, sid, cen, rad, P, str_, TOL):
+                        continue
+                    if not check_volume(P, str_, t[0], t[1], t[2], BR[li], SH_MASK[si], G, pores, pidx, PT, PQ, PC, out):
+                        continue
+                elif is_shell:
                     sample_tri(t0, t1, CUMA, TRI, t)
                     if not project_to_membrane(t, sm, nrm, G, pores, pidx, PT, PQ, PC, out):
                         continue
@@ -422,7 +483,7 @@ def pack_tile(seed, lo, size, halo,
                         if t[0] < lo[0] or t[1] < lo[1] or t[2] < lo[2] or t[0] >= lo[0] + size or t[1] >= lo[1] + size or t[2] >= lo[2] + size:
                             continue
                     else:
-                        vi = v0 + int(np.random.random() * (v1 - v0))
+                        vi = v0 + int(np.random.random() * (vcut - v0))
                         for k in range(3):
                             t[k] = VOXP[vi, k] + (np.random.random() - 0.5) * vox_h
                     if thin and np.random.random() < 0.5 and lumen_quat(t, REGMEM[reg], QFLAT[li], G, pores, pidx, PT, PQ, PC, out, nrm, q):

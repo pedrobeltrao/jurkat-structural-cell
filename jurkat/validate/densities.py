@@ -22,6 +22,8 @@ SHELL_VOL = {"sh_PM_cyto": "cytosol", "sh_PM_cortex": "cytosol", "sh_NE_lamina":
              "sh_ENDO_cyto": "cytosol", "sh_ENDO_lumen": "endo_lumen", "sh_OM_cyto": "cytosol"}
 SHELL_VOL.update({"sh_PM_periph": "cytosol", "sh_ENDO_periph": "cytosol", "sh_GOLGI_periph": "cytosol"})   # v6
 SHELL_SPLIT = {"sh_NPC": {"cytosol": 0.5, "nucleoplasm": 0.5}}   # v6 NPC-proximal shell: both NE faces (split evenly)
+SHELL_SPLIT.update({"sh_NPC_fg": {"cytosol": 0.5, "nucleoplasm": 0.5}})   # v7 NPC channel shell
+VIRT_VOL = {v: "cytosol" for v in getattr(jp, "VIRTUAL", [])}   # v7 virtual regions are cytosol voxels (volumes overlap)
 
 
 def tile_mass(files):
@@ -39,6 +41,8 @@ def main():
         packed = sum(ex.map(tile_mass, [fs[i::64] for i in range(64)]))
     M = pd.read_parquet(f"{W}/tiles.parquet")
     vol = {r: float(M[r].sum()) / 1e9 for r in RN[:NV]}                   # um3
+    for v, r_ in VIRT_VOL.items():                                       # v7: virtual-region mass belongs to the cytosol
+        packed[RN.index(r_)] += packed[RN.index(v)]; packed[RN.index(v)] = 0.0; vol[v] = 0.0
     for k in range(NSH0, len(RN)):
         if RN[k] in SHELL_VOL: packed[RN.index(SHELL_VOL[RN[k]])] += packed[k]
         for r_, f_ in SHELL_SPLIT.get(RN[k], {}).items(): packed[RN.index(r_)] += f_ * packed[k]
@@ -49,7 +53,8 @@ def main():
     pmass = np.array([float(np.where(np.load(f"{LIB}/{l}.npz")["kind"] == 0, 110.0, 330.0).sum()) for l in PL])
     pre = {"nucleoplasm": 0.0, "cytosol": 0.0}
     for l, c, m in zip(PL, cnt, pmass):
-        pre["nucleoplasm" if (l == "NUCLEOSOME" or l.startswith("H1-")) else "cytosol"] += c * m   # (v6: none inside speckles)
+        nuc = l == "NUCLEOSOME" or l.startswith("H1-") or l in ("CPX-2387", "CTCF", "CPX-5989", "CPX-5991", "LMNB1", "LMNB2", "LMNA")
+        pre["nucleoplasm" if nuc else "cytosol"] += c * m   # (v6: none inside speckles; v7: + chromatin functional layer, lamina)
     mr = np.load(f"{D}/prepass/mrna_cell1.npz", mmap_mode="r"); nt = float(np.asarray(mr["nt"]).sum())
     rows = []
     for i, r in enumerate(RN[:NV]):

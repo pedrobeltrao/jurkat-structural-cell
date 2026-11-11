@@ -10,6 +10,8 @@
 // v5 builds append a cristae section (cell3d.crista_lumen: per-mitochondrion lamella parameters + a bricked id grid);
 // loadFields adds a CR_HDR-word header for it at the end of F, whose offset it returns in F.crOff (0 = no cristae).
 export const F_CELL = 0, F_NE = 1, F_MITO = 2, F_ER = 3, F_GOLGI = 4, F_ENDO = 5, F_NUCLEOLUS = 6;
+// model v7: field 7 = deep Golgi SDF of the cisternae section (jenc 'golgi_deep'); present only with the cisternal Golgi
+export const F_GOLGI_DEEP = 7;
 // cristae header (word offsets from F.crOff): 0 n, 1-3 origin, 4 h, 5-7 dims, 8 B (cells per brick edge), 9-11 bricks,
 // 12 params offset (12 per mitochondrion), 13 brick index offset, 14 id data offset, 15 CR_W, 16 CR_GAP, 17 CR_JW
 export const CR_HDR = 32;
